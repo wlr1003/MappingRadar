@@ -192,57 +192,58 @@ HAL_StatusTypeDef LSM6DSL_ReadRegisters(LSM6DSL *ptr, uint8_t reg, uint8_t *data
 
 HAL_StatusTypeDef LSM6DSL_WriteRegister(LSM6DSL *ptr, uint8_t reg, uint8_t *data);
 
-/* LSM6DSL_AccExported_Functions ACCELEROMETER Exported functions */
-
-void    LSM6DSL_AccInit(uint16_t InitStruct);
-void    LSM6DSL_AccDeInit(void);
-uint8_t LSM6DSL_AccReadID(void);
-void    LSM6DSL_AccLowPower(uint16_t status);
-void    LSM6DSL_AccReadXYZ(int16_t* pData);
-/**
-  * @}
-  */
-
-/** @defgroup LSM6DSL_AccImported_Globals  ACCELEROMETER Imported Globals
-  * @{
-  */
-extern ACCELERO_DrvTypeDef Lsm6dslAccDrv;
-/**
-  * @}
-  */
-
-/** @defgroup LSM6DSL_GyroExported_Functions GYROSCOPE Exported functions
-  * @{
-  */
-/* Sensor Configuration Functions */
-void    LSM6DSL_GyroInit(uint16_t InitStruct);
-void    LSM6DSL_GyroDeInit(void);
-uint8_t LSM6DSL_GyroReadID(void);
-void    LSM6DSL_GyroLowPower(uint16_t status);
-void    LSM6DSL_GyroReadXYZAngRate(float *pfData);
-/**
-  * @}
-  */
-
-/** @defgroup LSM6DSL_GyroImported_Globals  GYROSCOPE Imported Globals
-  * @{
-  */
-/* Gyroscope driver structure */
-extern GYRO_DrvTypeDef Lsm6dslGyroDrv;
-
-/**
-  * @}
-  */
-
-/** @defgroup LSM6DSL_Imported_Functions LSM6DSL Imported Functions
- * @{
- */
-/* IO functions */
-extern void     SENSOR_IO_Init(void);
-extern void     SENSOR_IO_Write(uint8_t Addr, uint8_t Reg, uint8_t Value);
-extern uint8_t  SENSOR_IO_Read(uint8_t Addr, uint8_t Reg);
-extern uint16_t SENSOR_IO_ReadMultiple(uint8_t Addr, uint8_t Reg, uint8_t *Buffer, uint16_t Length);
-extern void     SENSOR_IO_WriteMultiple(uint8_t Addr, uint8_t Reg, uint8_t *Buffer, uint16_t Length);
+/* below copied from stm driver
+///* LSM6DSL_AccExported_Functions ACCELEROMETER Exported functions */
+//
+//void    LSM6DSL_AccInit(uint16_t InitStruct);
+//void    LSM6DSL_AccDeInit(void);
+//uint8_t LSM6DSL_AccReadID(void);
+//void    LSM6DSL_AccLowPower(uint16_t status);
+//void    LSM6DSL_AccReadXYZ(int16_t* pData);
+///**
+//  * @}
+//  */
+//
+///** @defgroup LSM6DSL_AccImported_Globals  ACCELEROMETER Imported Globals
+//  * @{
+//  */
+//extern ACCELERO_DrvTypeDef Lsm6dslAccDrv;
+///**
+//  * @}
+//  */
+//
+///** @defgroup LSM6DSL_GyroExported_Functions GYROSCOPE Exported functions
+//  * @{
+//  */
+///* Sensor Configuration Functions */
+//void    LSM6DSL_GyroInit(uint16_t InitStruct);
+//void    LSM6DSL_GyroDeInit(void);
+//uint8_t LSM6DSL_GyroReadID(void);
+//void    LSM6DSL_GyroLowPower(uint16_t status);
+//void    LSM6DSL_GyroReadXYZAngRate(float *pfData);
+///**
+//  * @}
+//  */
+//
+///** @defgroup LSM6DSL_GyroImported_Globals  GYROSCOPE Imported Globals
+//  * @{
+//  */
+///* Gyroscope driver structure */
+//extern GYRO_DrvTypeDef Lsm6dslGyroDrv;
+//
+///**
+//  * @}
+//  */
+//
+///** @defgroup LSM6DSL_Imported_Functions LSM6DSL Imported Functions
+// * @{
+// */
+///* IO functions */
+//extern void     SENSOR_IO_Init(void);
+//extern void     SENSOR_IO_Write(uint8_t Addr, uint8_t Reg, uint8_t Value);
+//extern uint8_t  SENSOR_IO_Read(uint8_t Addr, uint8_t Reg);
+//extern uint16_t SENSOR_IO_ReadMultiple(uint8_t Addr, uint8_t Reg, uint8_t *Buffer, uint16_t Length);
+//extern void     SENSOR_IO_WriteMultiple(uint8_t Addr, uint8_t Reg, uint8_t *Buffer, uint16_t Length);
 
 
 #endif /* INC_LSM6DSL_H_ */

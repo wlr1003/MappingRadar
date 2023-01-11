@@ -258,8 +258,9 @@ void HAL_SPI_MspInit(SPI_HandleTypeDef* hspi)
     PA5     ------> SPI1_SCK
     PA6     ------> SPI1_MISO
     PA7     ------> SPI1_MOSI
+    PA15     ------> SPI1_NSS
     */
-    GPIO_InitStruct.Pin = GPIO_PIN_5|GPIO_PIN_6|GPIO_PIN_7;
+    GPIO_InitStruct.Pin = GPIO_PIN_5|GPIO_PIN_6|GPIO_PIN_7|GPIO_PIN_15;
     GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
     GPIO_InitStruct.Pull = GPIO_NOPULL;
     GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
@@ -293,8 +294,9 @@ void HAL_SPI_MspDeInit(SPI_HandleTypeDef* hspi)
     PA5     ------> SPI1_SCK
     PA6     ------> SPI1_MISO
     PA7     ------> SPI1_MOSI
+    PA15     ------> SPI1_NSS
     */
-    HAL_GPIO_DeInit(GPIOA, GPIO_PIN_5|GPIO_PIN_6|GPIO_PIN_7);
+    HAL_GPIO_DeInit(GPIOA, GPIO_PIN_5|GPIO_PIN_6|GPIO_PIN_7|GPIO_PIN_15);
 
   /* USER CODE BEGIN SPI1_MspDeInit 1 */
 
@@ -400,66 +402,6 @@ void HAL_PCD_MspDeInit(PCD_HandleTypeDef* hpcd)
   /* USER CODE END USB_MspDeInit 1 */
   }
 
-}
-
-static uint32_t SAI1_client =0;
-
-void HAL_SAI_MspInit(SAI_HandleTypeDef* hsai)
-{
-
-  GPIO_InitTypeDef GPIO_InitStruct;
-  RCC_PeriphCLKInitTypeDef PeriphClkInit = {0};
-/* SAI1 */
-    if(hsai->Instance==SAI1_Block_A)
-    {
-    /* Peripheral clock enable */
-
-  /** Initializes the peripherals clocks
-  */
-    PeriphClkInit.PeriphClockSelection = RCC_PERIPHCLK_SAI1;
-    PeriphClkInit.Sai1ClockSelection = RCC_SAI1CLKSOURCE_SYSCLK;
-    if (HAL_RCCEx_PeriphCLKConfig(&PeriphClkInit) != HAL_OK)
-    {
-      Error_Handler();
-    }
-
-    if (SAI1_client == 0)
-    {
-       __HAL_RCC_SAI1_CLK_ENABLE();
-    }
-    SAI1_client ++;
-
-    /**SAI1_A_Block_A GPIO Configuration
-    PA10     ------> SAI1_SD_A
-    */
-    GPIO_InitStruct.Pin = GPIO_PIN_10;
-    GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
-    GPIO_InitStruct.Pull = GPIO_NOPULL;
-    GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
-    GPIO_InitStruct.Alternate = GPIO_AF14_SAI1;
-    HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
-
-    }
-}
-
-void HAL_SAI_MspDeInit(SAI_HandleTypeDef* hsai)
-{
-/* SAI1 */
-    if(hsai->Instance==SAI1_Block_A)
-    {
-    SAI1_client --;
-    if (SAI1_client == 0)
-      {
-      /* Peripheral clock disable */
-       __HAL_RCC_SAI1_CLK_DISABLE();
-      }
-
-    /**SAI1_A_Block_A GPIO Configuration
-    PA10     ------> SAI1_SD_A
-    */
-    HAL_GPIO_DeInit(GPIOA, GPIO_PIN_10);
-
-    }
 }
 
 /* USER CODE BEGIN 1 */
