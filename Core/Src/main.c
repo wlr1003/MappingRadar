@@ -18,6 +18,7 @@
 /* USER CODE END Header */
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
+#include "usb_device.h"
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
@@ -53,8 +54,6 @@ DMA_HandleTypeDef hdma_dac1_ch1;
 SPI_HandleTypeDef hspi1;
 
 TIM_HandleTypeDef htim2;
-
-PCD_HandleTypeDef hpcd_USB_FS;
 
 /* USER CODE BEGIN PV */
 uint32_t CTune = 3103; /* 2.5Volt with 3.3V VDDA */
@@ -234,7 +233,6 @@ static void MX_GPIO_Init(void);
 static void MX_DMA_Init(void);
 static void MX_ADC1_Init(void);
 static void MX_DAC1_Init(void);
-static void MX_USB_PCD_Init(void);
 static void MX_TIM2_Init(void);
 static void MX_SPI1_Init(void);
 /* USER CODE BEGIN PFP */
@@ -277,10 +275,12 @@ int main(void)
   MX_DMA_Init();
   MX_ADC1_Init();
   MX_DAC1_Init();
-  MX_USB_PCD_Init();
   MX_TIM2_Init();
   MX_SPI1_Init();
+  MX_USB_Device_Init();
   /* USER CODE BEGIN 2 */
+
+  /* Set DAC_CH_1 to CTune or VTune based on Ctune flag*/
   if (!Ctune)
   	  {
 	  HAL_DAC_Start_DMA(&hdac1,DAC_CHANNEL_1,(uint32_t*)VTUNE,2484,DAC_ALIGN_12B_R);
@@ -291,6 +291,9 @@ int main(void)
 	  HAL_DAC_Start(&hdac1, DAC_CHANNEL_1);
 	  HAL_DAC_SetValue(&hdac1, DAC_CHANNEL_1, DAC_ALIGN_12B_R, CTUNE);
   	  }
+
+  /* initialize accelerometer/gyroscope on lsm6dsl */
+
 
   /* USER CODE END 2 */
 
@@ -548,39 +551,6 @@ static void MX_TIM2_Init(void)
   /* USER CODE BEGIN TIM2_Init 2 */
 
   /* USER CODE END TIM2_Init 2 */
-
-}
-
-/**
-  * @brief USB Initialization Function
-  * @param None
-  * @retval None
-  */
-static void MX_USB_PCD_Init(void)
-{
-
-  /* USER CODE BEGIN USB_Init 0 */
-
-  /* USER CODE END USB_Init 0 */
-
-  /* USER CODE BEGIN USB_Init 1 */
-
-  /* USER CODE END USB_Init 1 */
-  hpcd_USB_FS.Instance = USB;
-  hpcd_USB_FS.Init.dev_endpoints = 8;
-  hpcd_USB_FS.Init.speed = PCD_SPEED_FULL;
-  hpcd_USB_FS.Init.phy_itface = PCD_PHY_EMBEDDED;
-  hpcd_USB_FS.Init.Sof_enable = DISABLE;
-  hpcd_USB_FS.Init.low_power_enable = DISABLE;
-  hpcd_USB_FS.Init.lpm_enable = DISABLE;
-  hpcd_USB_FS.Init.battery_charging_enable = DISABLE;
-  if (HAL_PCD_Init(&hpcd_USB_FS) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  /* USER CODE BEGIN USB_Init 2 */
-
-  /* USER CODE END USB_Init 2 */
 
 }
 
