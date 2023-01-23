@@ -22,7 +22,9 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-#include "lsm6dsl.h"
+#include "lsm6dsl_reg.h"
+
+
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -42,7 +44,7 @@
 
 /* Private macro -------------------------------------------------------------*/
 /* USER CODE BEGIN PM */
-
+#define TX_BUF_DIM          1000
 /* USER CODE END PM */
 
 /* Private variables ---------------------------------------------------------*/
@@ -56,6 +58,16 @@ SPI_HandleTypeDef hspi1;
 TIM_HandleTypeDef htim2;
 
 /* USER CODE BEGIN PV */
+static int16_t data_raw_acceleration[3];
+static int16_t data_raw_angular_rate[3];
+static int16_t data_raw_temperature;
+static float acceleration_mg[3];
+static float angular_rate_mdps[3];
+static float temperature_degC;
+static uint8_t whoamI, rst;
+static uint8_t tx_buffer[TX_BUF_DIM];
+// Flag to indicate when the SPI transfer is complete
+volatile uint8_t spi_complete_flag = 0;
 uint32_t CTune = 3103; /* 2.5Volt with 3.3V VDDA */
 uint32_t VTune[2484] = {
 		2482, 2483, 2484, 2485, 2486, 2487, 2488, 2489, 2490, 2491, 2492, 2493, 2494, 2495, 2496,
@@ -236,7 +248,9 @@ static void MX_DAC1_Init(void);
 static void MX_TIM2_Init(void);
 static void MX_SPI1_Init(void);
 /* USER CODE BEGIN PFP */
-
+/** Please note that is MANDATORY: return 0 -> no Error.**/
+static int32_t platform_write(void *handle, uint8_t Reg, const uint8_t *Bufp, uint16_t len);
+static int32_t platform_read(void *handle, uint8_t Reg, uint8_t *Bufp, uint16_t len);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -283,18 +297,32 @@ int main(void)
   /* Set DAC_CH_1 to CTune or VTune based on Ctune flag*/
   if (!Ctune)
   	  {
-	  HAL_DAC_Start_DMA(&hdac1,DAC_CHANNEL_1,(uint32_t*)VTUNE,2484,DAC_ALIGN_12B_R);
+	  HAL_DAC_Start_DMA(&hdac1,DAC_CHANNEL_1,(uint32_t*)VTune,2484,DAC_ALIGN_12B_R);
 	  HAL_TIM_Base_Start(&htim2);
   	  }
   else
   	  {
 	  HAL_DAC_Start(&hdac1, DAC_CHANNEL_1);
-	  HAL_DAC_SetValue(&hdac1, DAC_CHANNEL_1, DAC_ALIGN_12B_R, CTUNE);
+	  HAL_DAC_SetValue(&hdac1, DAC_CHANNEL_1, DAC_ALIGN_12B_R, CTune);
   	  }
 
   /* initialize accelerometer/gyroscope on lsm6dsl */
+  stmdev_ctx_t dev_ctx;
+  dev_ctx.write_reg = platform_write;
+  dev_ctx.read_reg = platform_read;
+  /* Check device ID */
+    whoamI = 0;
+    lsm6dsl_device_id_get(&dev_ctx, &whoamI);
 
+    if ( whoamI != LSM6DSL_ID )
+      while (1); /*manage here device not found */
 
+    /* Restore default configuration */
+    lsm6dsl_reset_set(&dev_ctx, PROPERTY_ENABLE);
+
+    do {
+      lsm6dsl_reset_get(&dev_ctx, &rst);
+    } while (rst);
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -491,14 +519,14 @@ static void MX_SPI1_Init(void)
   hspi1.Init.DataSize = SPI_DATASIZE_8BIT;
   hspi1.Init.CLKPolarity = SPI_POLARITY_LOW;
   hspi1.Init.CLKPhase = SPI_PHASE_1EDGE;
-  hspi1.Init.NSS = SPI_NSS_HARD_OUTPUT;
+  hspi1.Init.NSS = SPI_NSS_SOFT;
   hspi1.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_32;
   hspi1.Init.FirstBit = SPI_FIRSTBIT_MSB;
   hspi1.Init.TIMode = SPI_TIMODE_DISABLE;
   hspi1.Init.CRCCalculation = SPI_CRCCALCULATION_DISABLE;
   hspi1.Init.CRCPolynomial = 7;
   hspi1.Init.CRCLength = SPI_CRC_LENGTH_DATASIZE;
-  hspi1.Init.NSSPMode = SPI_NSS_PULSE_ENABLE;
+  hspi1.Init.NSSPMode = SPI_NSS_PULSE_DISABLE;
   if (HAL_SPI_Init(&hspi1) != HAL_OK)
   {
     Error_Handler();
@@ -585,6 +613,9 @@ static void MX_GPIO_Init(void)
   __HAL_RCC_GPIOA_CLK_ENABLE();
   __HAL_RCC_GPIOB_CLK_ENABLE();
 
+  /*Configure GPIO pin Output Level */
+  HAL_GPIO_WritePin(LSM6DSL_ncs_GPIO_Port, LSM6DSL_ncs_Pin, GPIO_PIN_RESET);
+
   /*Configure GPIO pins : PB0 PB1 */
   GPIO_InitStruct.Pin = GPIO_PIN_0|GPIO_PIN_1;
   GPIO_InitStruct.Mode = GPIO_MODE_IT_RISING;
@@ -607,6 +638,13 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Alternate = GPIO_AF4_I2C2;
   HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
 
+  /*Configure GPIO pin : LSM6DSL_ncs_Pin */
+  GPIO_InitStruct.Pin = LSM6DSL_ncs_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+  HAL_GPIO_Init(LSM6DSL_ncs_GPIO_Port, &GPIO_InitStruct);
+
   /* EXTI interrupt init*/
   HAL_NVIC_SetPriority(EXTI0_IRQn, 0, 0);
   HAL_NVIC_EnableIRQ(EXTI0_IRQn);
@@ -617,6 +655,54 @@ static void MX_GPIO_Init(void)
 }
 
 /* USER CODE BEGIN 4 */
+/*
+ * @brief  Write generic device register (platform dependent)
+ *
+ * @param  handle    customizable argument. In this examples is used in
+ *                   order to select the correct sensor bus handler.
+ * @param  reg       register to write
+ * @param  bufp      pointer to data to write in register reg
+ * @param  len       number of consecutive register to write
+ *
+ */
+static int32_t platform_write(void *handle, uint8_t reg, const uint8_t *bufp,
+                              uint16_t len)
+{
+  HAL_GPIO_WritePin(LSM6DSL_ncs_GPIO_Port, LSM6DSL_ncs_Pin, GPIO_PIN_RESET);
+  HAL_SPI_Transmit(handle, &reg, 1, 1000);
+  HAL_SPI_Transmit(handle, (uint8_t*) bufp, len, 1000);
+  HAL_GPIO_WritePin(LSM6DSL_ncs_GPIO_Port, LSM6DSL_ncs_Pin, GPIO_PIN_SET);
+  return 0;
+}
+
+/*
+ * @brief  Read generic device register (platform dependent)
+ *
+ * @param  handle    customizable argument. In this examples is used in
+ *                   order to select the correct sensor bus handler.
+ * @param  reg       register to read
+ * @param  bufp      pointer to buffer that store the data read
+ * @param  len       number of consecutive register to read
+ *
+ */
+static int32_t platform_read(void *handle, uint8_t reg, uint8_t *bufp,
+                             uint16_t len)
+{
+	uint8_t tx_data[2];
+	tx_data[0] = 0x80 | reg;
+	tx_data[1] = 0x00;
+	// Reset the complete flag
+	spi_complete_flag = 0;
+	// Start the SPI transfer
+	HAL_GPIO_WritePin(LSM6DSL_ncs_GPIO_Port, LSM6DSL_ncs_Pin, GPIO_PIN_RESET);
+	HAL_SPI_TransmitReceive_DMA(&hspi1, tx_data, bufp, len);
+
+	// Wait for the transfer to complete
+	while(!spi_complete_flag);
+
+	HAL_GPIO_WritePin(LSM6DSL_ncs_GPIO_Port, LSM6DSL_ncs_Pin, GPIO_PIN_SET);
+  return 0;
+}
 
 /* USER CODE END 4 */
 
