@@ -23,22 +23,22 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include "lsm6dsl_reg.h"
-
+#include "usbd_cdc_if.h"
 
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
 /* USER CODE BEGIN PTD */
-
+typedef struct Control {
+	uint16_t run_time_sec;
+	char mode_instructed;
+	char mode_running;
+} control;
 /* USER CODE END PTD */
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
 
-/*
- * Set Ctune = 0 or 1, this will select dac output between CTune and VTune
- */
-#define Ctune 0
 
 /* USER CODE END PD */
 
@@ -66,6 +66,8 @@ static float angular_rate_mdps[3];
 static float temperature_degC;
 static uint8_t whoamI, rst;
 static uint8_t tx_buffer[TX_BUF_DIM];
+extern uint8_t UserRxBufferFS[APP_RX_DATA_SIZE]; // usb receive buffer
+extern uint8_t input_received_flag; // flag for usb input received
 // Flag to indicate when the SPI transfer is complete
 volatile uint8_t spi_complete_flag = 0;
 uint32_t CTune = 3103; /* 2.5Volt with 3.3V VDDA */
@@ -248,9 +250,15 @@ static void MX_DAC1_Init(void);
 static void MX_TIM2_Init(void);
 static void MX_SPI1_Init(void);
 /* USER CODE BEGIN PFP */
+// platform read/write used to read/write to lsm6dsl
 /** Please note that is MANDATORY: return 0 -> no Error.**/
 static int32_t platform_write(void *handle, uint8_t Reg, const uint8_t *Bufp, uint16_t len);
 static int32_t platform_read(void *handle, uint8_t Reg, uint8_t *Bufp, uint16_t len);
+// usb transmit
+extern uint8_t CDC_Transmit_FS(uint8_t* Buf, uint16_t Len);
+void process_input(const uint8_t *arr, control *pControl);
+void set_VCO_input_DAC(control *ctrl_ptr);
+
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -265,7 +273,12 @@ static int32_t platform_read(void *handle, uint8_t Reg, uint8_t *Bufp, uint16_t 
 int main(void)
 {
   /* USER CODE BEGIN 1 */
-
+input_received_flag = 0;
+// initialize command struct
+control user_input;
+user_input.mode_instructed = 'r'; // r:range, s:speed
+user_input.mode_running = 'x'; // x:none
+user_input.run_time_sec=0; // length of time in seconds to operate
   /* USER CODE END 1 */
 
   /* MCU Configuration--------------------------------------------------------*/
@@ -294,17 +307,7 @@ int main(void)
   MX_USB_Device_Init();
   /* USER CODE BEGIN 2 */
 
-  /* Set DAC_CH_1 to CTune or VTune based on Ctune flag*/
-  if (!Ctune)
-  	  {
-	  HAL_DAC_Start_DMA(&hdac1,DAC_CHANNEL_1,(uint32_t*)VTune,2484,DAC_ALIGN_12B_R);
-	  HAL_TIM_Base_Start(&htim2);
-  	  }
-  else
-  	  {
-	  HAL_DAC_Start(&hdac1, DAC_CHANNEL_1);
-	  HAL_DAC_SetValue(&hdac1, DAC_CHANNEL_1, DAC_ALIGN_12B_R, CTune);
-  	  }
+	set_VCO_input_DAC(&user_input);
 
   /* initialize accelerometer/gyroscope on lsm6dsl */
   stmdev_ctx_t dev_ctx;
@@ -315,8 +318,10 @@ int main(void)
     lsm6dsl_device_id_get(&dev_ctx, &whoamI);
 
     if ( whoamI != LSM6DSL_ID )
-      while (1); /*manage here device not found */
+      while (1) /*manage here device not found */
+      {
 
+      }
     /* Restore default configuration */
     lsm6dsl_reset_set(&dev_ctx, PROPERTY_ENABLE);
 
@@ -329,6 +334,17 @@ int main(void)
   /* USER CODE BEGIN WHILE */
   while (1)
   {
+	  if (input_received_flag)
+	  {
+	 	    	process_input(&UserRxBufferFS,&user_input);
+	 	    	set_VCO_input_DAC(&user_input);
+	 	    	//perform_trial(&user_input);
+	 	        input_received_flag=0;
+	  }
+	  else
+	  {
+	 	    	HAL_Delay(250);
+	  }
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
@@ -696,12 +712,92 @@ static int32_t platform_read(void *handle, uint8_t reg, uint8_t *bufp,
 	// Start the SPI transfer
 	HAL_GPIO_WritePin(LSM6DSL_ncs_GPIO_Port, LSM6DSL_ncs_Pin, GPIO_PIN_RESET);
 	HAL_SPI_TransmitReceive_DMA(&hspi1, tx_data, bufp, len);
-
+//	  if(HAL_SPI_TransmitReceive_DMA(&SpiHandle, (uint8_t*)aTxBuffer, (uint8_t *)aRxBuffer, BUFFERSIZE) != HAL_OK)
+//	  {
+//	    /* Transfer error in transmission process */
+//	    Error_Handler();
+//	  }
 	// Wait for the transfer to complete
 	while(!spi_complete_flag);
 
 	HAL_GPIO_WritePin(LSM6DSL_ncs_GPIO_Port, LSM6DSL_ncs_Pin, GPIO_PIN_SET);
   return 0;
+}
+
+
+/*
+ * process the input received over usb to extract the operating mode and the time of operation
+ *
+ * @param arr    user input array
+ * @param pCommand command struct to return mode and time
+*/
+void process_input(const uint8_t *arr, control *pControl) {
+    uint8_t mode[]={'m','o','d','e',':'};
+    uint8_t time[] = {'t','i','m','e',':'};
+    int i = 0;
+    int j = 0;
+    // check input to ensure "mode:" is received
+    while (arr[i]==mode[i]) {
+        i++;
+    }
+    // set mode in command
+    pControl->mode_instructed=arr[i];
+    // move index past command for mode and '\n'
+    while (arr[i]!='t') {
+        i++;
+    }
+    // check input to ensure "time:" is received
+    while (arr[i]==time[j]) {
+        i++;
+        j++;
+    }
+    // set j to index one past first digit of command for time
+    j=i+1;
+    // get index of last digit
+    while (arr[j]!='\n') {
+        j++;
+    }
+    // set runt time to zero
+    pControl->run_time_sec=0;
+    // add each digits value,
+    // *10 to shift current value left one digit for adding next digit
+    // -48 converts from ascii to int
+    while (i < j) {
+        pControl->run_time_sec=(pControl->run_time_sec*10)+arr[i]-48;
+        i++;
+    }
+}
+
+
+void set_VCO_input_DAC(control *ctrl_ptr) {
+	// if currently running is as instructed, return
+	if (ctrl_ptr->mode_running==ctrl_ptr->mode_instructed) {
+		return;
+	}
+
+	  /* Set DAC_CH_1 to CTune or VTune based on user input for mode, defaults to range(r)*/
+	if (ctrl_ptr->mode_instructed=='r')
+	{
+		// if currently running in other mode, turn it off
+		if (ctrl_ptr->mode_running=='s') {
+			HAL_DAC_Stop(&hdac1, DAC_CHANNEL_1);
+		}
+		// turn on dac using dma and timer 2
+		HAL_DAC_Start_DMA(&hdac1,DAC_CHANNEL_1,(uint32_t*)VTune,2484,DAC_ALIGN_12B_R);
+		HAL_TIM_Base_Start(&htim2);
+		ctrl_ptr->mode_running='r';
+	}
+	else
+	{
+		if (ctrl_ptr->mode_running=='r') {
+			HAL_DAC_Stop_DMA(&hdac1, DAC_CHANNEL_1);
+			HAL_TIM_Base_Stop(&htim2);
+
+		}
+		HAL_DAC_Start(&hdac1, DAC_CHANNEL_1);
+		HAL_DAC_SetValue(&hdac1, DAC_CHANNEL_1, DAC_ALIGN_12B_R, CTune);
+		ctrl_ptr->mode_running='s';
+	}
 }
 
 /* USER CODE END 4 */
