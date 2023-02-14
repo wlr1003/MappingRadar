@@ -25,6 +25,7 @@
 #include "lsm6dsl_reg.h"
 #include "usbd_cdc_if.h"
 
+
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -279,6 +280,10 @@ int main(void)
 {
   /* USER CODE BEGIN 1 */
 input_received_flag = 0;
+uint8_t message2[] ="message in";
+uint8_t lsm6dslError[] ="LSM6DSL whoAmI error";
+
+
 // initialize command struct
 control user_input;
 user_input.mode_instructed = 'r'; // r:range, s:speed
@@ -312,8 +317,11 @@ user_input.run_time_sec=0; // length of time in seconds to operate
   MX_USB_Device_Init();
   MX_TIM1_Init();
   /* USER CODE BEGIN 2 */
-
-  set_VCO_input_DAC(&user_input); // starts timer and sets dac output used for VCO
+//  test line
+//  HAL_DAC_Start_DMA(&hdac1,DAC_CHANNEL_1,(uint32_t*)VTune,2484,DAC_ALIGN_12B_R);
+//  HAL_TIM_Base_Start(&htim2);
+//  end test
+//  set_VCO_input_DAC(&user_input); // starts timer and sets dac output used for VCO
   HAL_TIM_Base_Start(&htim1); // start timer 1 for adc1 conversion for radar mixer o/p
   HAL_TIM_OC_Start(&htim1, TIM_CHANNEL_3); // sets output compare for timer1, sets PA10 to toggle on timer1 register reload (40kHz)
   HAL_ADC_Start_DMA(&hadc1, (uint32_t*)adc1_dma_buf_mixer_out, DMA_BUF_LEN); // start the adc with dma
@@ -322,21 +330,20 @@ user_input.run_time_sec=0; // length of time in seconds to operate
   stmdev_ctx_t dev_ctx;
   dev_ctx.write_reg = platform_write;
   dev_ctx.read_reg = platform_read;
+  dev_ctx.handle = &hspi1;
   /* Check device ID */
     whoamI = 0;
     lsm6dsl_device_id_get(&dev_ctx, &whoamI);
 
-    if ( whoamI != LSM6DSL_ID )
-      while (1) /*manage here device not found */
-      {
-
-      }
-    /* Restore default configuration */
-    lsm6dsl_reset_set(&dev_ctx, PROPERTY_ENABLE);
-
-    do {
-      lsm6dsl_reset_get(&dev_ctx, &rst);
-    } while (rst);
+    if ( whoamI != LSM6DSL_ID ) {
+    	CDC_Transmit_FS(lsm6dslError,sizeof(lsm6dslError));
+    }
+//    /* Restore default configuration */
+//    lsm6dsl_reset_set(&dev_ctx, PROPERTY_ENABLE);
+//
+//    do {
+//      lsm6dsl_reset_get(&dev_ctx, &rst);
+//    } while (rst);
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -724,12 +731,22 @@ static void MX_GPIO_Init(void)
   __HAL_RCC_GPIOB_CLK_ENABLE();
 
   /*Configure GPIO pin Output Level */
+  HAL_GPIO_WritePin(GPIOB, GPIO_PIN_11, GPIO_PIN_SET);
+
+  /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(LSM6DSL_ncs_GPIO_Port, LSM6DSL_ncs_Pin, GPIO_PIN_RESET);
 
   /*Configure GPIO pins : PB0 PB1 */
   GPIO_InitStruct.Pin = GPIO_PIN_0|GPIO_PIN_1;
   GPIO_InitStruct.Mode = GPIO_MODE_IT_RISING;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
+  HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
+
+  /*Configure GPIO pin : PB11 */
+  GPIO_InitStruct.Pin = GPIO_PIN_11;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
 
   /*Configure GPIO pin : PA8 */
@@ -779,8 +796,8 @@ static int32_t platform_write(void *handle, uint8_t reg, const uint8_t *bufp,
                               uint16_t len)
 {
   HAL_GPIO_WritePin(LSM6DSL_ncs_GPIO_Port, LSM6DSL_ncs_Pin, GPIO_PIN_RESET);
-  HAL_SPI_Transmit(handle, &reg, 1, 1000);
-  HAL_SPI_Transmit(handle, (uint8_t*) bufp, len, 1000);
+  HAL_SPI_Transmit(&hspi1, &reg, 1, 2);
+  HAL_SPI_Transmit(&hspi1, (uint8_t*) bufp, len, 1000);
   HAL_GPIO_WritePin(LSM6DSL_ncs_GPIO_Port, LSM6DSL_ncs_Pin, GPIO_PIN_SET);
   return 0;
 }
@@ -801,23 +818,51 @@ static int32_t platform_read(void *handle, uint8_t reg, uint8_t *bufp,
 	uint8_t tx_data[2];
 	tx_data[0] = 0x80 | reg;
 	tx_data[1] = 0x00;
-	// Reset the complete flag
-	spi_complete_flag = 0;
+	// get spi state
+	HAL_SPI_StateTypeDef tmp_state;
+	tmp_state = HAL_SPI_GetState(handle);
+
 	// Start the SPI transfer
 	HAL_GPIO_WritePin(LSM6DSL_ncs_GPIO_Port, LSM6DSL_ncs_Pin, GPIO_PIN_RESET);
-	HAL_SPI_TransmitReceive_DMA(&hspi1, tx_data, bufp, len);
+	HAL_SPI_TransmitReceive_DMA(handle, &tx_data, bufp, len + 1);
 //	  if(HAL_SPI_TransmitReceive_DMA(&SpiHandle, (uint8_t*)aTxBuffer, (uint8_t *)aRxBuffer, BUFFERSIZE) != HAL_OK)
 //	  {
 //	    /* Transfer error in transmission process */
 //	    Error_Handler();
 //	  }
 	// Wait for the transfer to complete
-	while(!spi_complete_flag);
+    while(HAL_SPI_GetState(handle) != tmp_state);
 
 	HAL_GPIO_WritePin(LSM6DSL_ncs_GPIO_Port, LSM6DSL_ncs_Pin, GPIO_PIN_SET);
   return 0;
 }
 
+
+/**
+  * @brief  Rx Transfer completed callback.
+  * @param  hspi pointer to a SPI_HandleTypeDef structure that contains
+  *               the configuration information for SPI module.
+  * @retval None
+  */
+void HAL_SPI_RxCpltCallback(SPI_HandleTypeDef *hspi)
+{
+  /* Prevent unused argument(s) compilation warning */
+  UNUSED(hspi);
+  spi_complete_flag = 1;
+}
+
+/**
+  * @brief  Tx and Rx Transfer completed callback.
+  * @param  hspi pointer to a SPI_HandleTypeDef structure that contains
+  *               the configuration information for SPI module.
+  * @retval None
+  */
+void HAL_SPI_TxRxCpltCallback(SPI_HandleTypeDef *hspi)
+{
+  /* Prevent unused argument(s) compilation warning */
+  UNUSED(hspi);
+  spi_complete_flag = 1;
+}
 
 /**
   * @brief  Conversion complete callback in non-blocking mode.
@@ -850,7 +895,10 @@ void HAL_ADC_ConvHalfCpltCallback(ADC_HandleTypeDef *hadc)
  * @param pCommand command struct to return mode and time
 */
 void process_input(const uint8_t *arr, control *pControl) {
-    uint8_t mode[]={'m','o','d','e',':'};
+	uint8_t messageIn[] ="processing input";
+	uint8_t messageComplete[] ="processing complete";
+	CDC_Transmit_FS(messageIn,sizeof(messageIn));
+	uint8_t mode[]={'m','o','d','e',':'};
     uint8_t time[] = {'t','i','m','e',':'};
     int i = 0;
     int j = 0;
@@ -884,6 +932,8 @@ void process_input(const uint8_t *arr, control *pControl) {
         pControl->run_time_sec=(pControl->run_time_sec*10)+arr[i]-48;
         i++;
     }
+	CDC_Transmit_FS(messageComplete,sizeof(messageComplete));
+
 }
 
 
