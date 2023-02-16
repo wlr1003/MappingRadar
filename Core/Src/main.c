@@ -317,11 +317,7 @@ user_input.run_time_sec=0; // length of time in seconds to operate
   MX_USB_Device_Init();
   MX_TIM1_Init();
   /* USER CODE BEGIN 2 */
-//  test line
-//  HAL_DAC_Start_DMA(&hdac1,DAC_CHANNEL_1,(uint32_t*)VTune,2484,DAC_ALIGN_12B_R);
-//  HAL_TIM_Base_Start(&htim2);
-//  end test
-//  set_VCO_input_DAC(&user_input); // starts timer and sets dac output used for VCO
+  set_VCO_input_DAC(&user_input); // starts timer and sets dac output used for VCO
   HAL_TIM_Base_Start(&htim1); // start timer 1 for adc1 conversion for radar mixer o/p
   HAL_TIM_OC_Start(&htim1, TIM_CHANNEL_3); // sets output compare for timer1, sets PA10 to toggle on timer1 register reload (40kHz)
   HAL_ADC_Start_DMA(&hadc1, (uint32_t*)adc1_dma_buf_mixer_out, DMA_BUF_LEN); // start the adc with dma
