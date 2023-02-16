@@ -443,12 +443,12 @@ static void MX_ADC1_Init(void)
   hadc1.Init.ScanConvMode = ADC_SCAN_DISABLE;
   hadc1.Init.EOCSelection = ADC_EOC_SINGLE_CONV;
   hadc1.Init.LowPowerAutoWait = DISABLE;
-  hadc1.Init.ContinuousConvMode = DISABLE;
+  hadc1.Init.ContinuousConvMode = ENABLE;
   hadc1.Init.NbrOfConversion = 1;
   hadc1.Init.DiscontinuousConvMode = DISABLE;
   hadc1.Init.ExternalTrigConv = ADC_EXTERNALTRIG_T1_TRGO;
   hadc1.Init.ExternalTrigConvEdge = ADC_EXTERNALTRIGCONVEDGE_RISING;
-  hadc1.Init.DMAContinuousRequests = DISABLE;
+  hadc1.Init.DMAContinuousRequests = ENABLE;
   hadc1.Init.Overrun = ADC_OVR_DATA_PRESERVED;
   hadc1.Init.OversamplingMode = DISABLE;
   if (HAL_ADC_Init(&hadc1) != HAL_OK)
@@ -590,7 +590,7 @@ static void MX_TIM1_Init(void)
 
   /* USER CODE END TIM1_Init 1 */
   htim1.Instance = TIM1;
-  htim1.Init.Prescaler = 42000-1;
+  htim1.Init.Prescaler = 210-1;
   htim1.Init.CounterMode = TIM_COUNTERMODE_UP;
   htim1.Init.Period = 9;
   htim1.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
@@ -883,8 +883,13 @@ void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef *hadc)
   */
 void HAL_ADC_ConvHalfCpltCallback(ADC_HandleTypeDef *hadc)
 {
-	memcpy(tx_buffer,adc1_dma_buf_mixer_out,DMA_BUF_LEN/2);
-	CDC_Transmit_FS(tx_buffer, DMA_BUF_LEN/2);
+	uint8_t len = DMA_BUF_LEN/2;
+	uint8_t m1 = 'sending first half';
+	uint8_t m2 = 'first half sent';
+	memcpy(tx_buffer,adc1_dma_buf_mixer_out,len);
+	CDC_Transmit_FS(m1,sizeof(m1));
+	CDC_Transmit_FS(tx_buffer,len);
+	CDC_Transmit_FS(m2,sizeof(m2));
 }
 
 
