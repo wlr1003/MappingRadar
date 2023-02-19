@@ -45,8 +45,9 @@ typedef struct Control {
 
 /* Private macro -------------------------------------------------------------*/
 /* USER CODE BEGIN PM */
-#define TX_BUF_DIM 1000 // buffer length for usb transmitting
-#define DMA_BUF_LEN 256 // buffer length for adc1 dma, mixer o/p
+#define TX_BUF_DIM 512 // buffer length for usb transmitting
+#define DMA_BUF_LEN 32 // buffer length for adc1 dma, mixer o/p
+
 /* USER CODE END PM */
 
 /* Private variables ---------------------------------------------------------*/
@@ -70,7 +71,7 @@ static float acceleration_mg[3];
 static float angular_rate_mdps[3];
 static float temperature_degC;
 static uint8_t whoamI, rst;
-static uint8_t tx_buffer[TX_BUF_DIM];
+//static uint8_t tx_buffer[TX_BUF_DIM];
 extern uint8_t UserRxBufferFS[APP_RX_DATA_SIZE]; // usb receive buffer
 extern uint8_t input_received_flag; // flag for usb input received
 // Flag to indicate when the SPI transfer is complete
@@ -260,6 +261,7 @@ static void MX_TIM1_Init(void);
 /** Please note that is MANDATORY: return 0 -> no Error.**/
 static int32_t platform_write(void *handle, uint8_t Reg, const uint8_t *Bufp, uint16_t len);
 static int32_t platform_read(void *handle, uint8_t Reg, uint8_t *Bufp, uint16_t len);
+
 // usb transmit
 extern uint8_t CDC_Transmit_FS(uint8_t* Buf, uint16_t Len);
 void process_input(const uint8_t *arr, control *pControl);
@@ -332,7 +334,7 @@ user_input.run_time_sec=0; // length of time in seconds to operate
     lsm6dsl_device_id_get(&dev_ctx, &whoamI);
 
     if ( whoamI != LSM6DSL_ID ) {
-    	CDC_Transmit_FS(lsm6dslError,sizeof(lsm6dslError));
+//    	CDC_Transmit_FS(lsm6dslError,sizeof(lsm6dslError));
     }
 //    /* Restore default configuration */
 //    lsm6dsl_reset_set(&dev_ctx, PROPERTY_ENABLE);
@@ -375,20 +377,19 @@ void SystemClock_Config(void)
 
   /** Configure the main internal regulator output voltage
   */
-  HAL_PWREx_ControlVoltageScaling(PWR_REGULATOR_VOLTAGE_SCALE1_BOOST);
+  HAL_PWREx_ControlVoltageScaling(PWR_REGULATOR_VOLTAGE_SCALE1);
 
   /** Initializes the RCC Oscillators according to the specified parameters
   * in the RCC_OscInitTypeDef structure.
   */
-  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSI48|RCC_OSCILLATORTYPE_HSE;
+  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSE;
   RCC_OscInitStruct.HSEState = RCC_HSE_ON;
-  RCC_OscInitStruct.HSI48State = RCC_HSI48_ON;
   RCC_OscInitStruct.PLL.PLLState = RCC_PLL_ON;
   RCC_OscInitStruct.PLL.PLLSource = RCC_PLLSOURCE_HSE;
-  RCC_OscInitStruct.PLL.PLLM = RCC_PLLM_DIV2;
-  RCC_OscInitStruct.PLL.PLLN = 42;
+  RCC_OscInitStruct.PLL.PLLM = RCC_PLLM_DIV1;
+  RCC_OscInitStruct.PLL.PLLN = 12;
   RCC_OscInitStruct.PLL.PLLP = RCC_PLLP_DIV12;
-  RCC_OscInitStruct.PLL.PLLQ = RCC_PLLQ_DIV6;
+  RCC_OscInitStruct.PLL.PLLQ = RCC_PLLQ_DIV4;
   RCC_OscInitStruct.PLL.PLLR = RCC_PLLR_DIV2;
   if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK)
   {
@@ -401,10 +402,10 @@ void SystemClock_Config(void)
                               |RCC_CLOCKTYPE_PCLK1|RCC_CLOCKTYPE_PCLK2;
   RCC_ClkInitStruct.SYSCLKSource = RCC_SYSCLKSOURCE_PLLCLK;
   RCC_ClkInitStruct.AHBCLKDivider = RCC_SYSCLK_DIV1;
-  RCC_ClkInitStruct.APB1CLKDivider = RCC_HCLK_DIV2;
+  RCC_ClkInitStruct.APB1CLKDivider = RCC_HCLK_DIV1;
   RCC_ClkInitStruct.APB2CLKDivider = RCC_HCLK_DIV1;
 
-  if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_4) != HAL_OK)
+  if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_3) != HAL_OK)
   {
     Error_Handler();
   }
@@ -432,7 +433,7 @@ static void MX_ADC1_Init(void)
   /** Common config
   */
   hadc1.Instance = ADC1;
-  hadc1.Init.ClockPrescaler = ADC_CLOCK_ASYNC_DIV1;
+  hadc1.Init.ClockPrescaler = ADC_CLOCK_SYNC_PCLK_DIV4;
   hadc1.Init.Resolution = ADC_RESOLUTION_12B;
   hadc1.Init.DataAlign = ADC_DATAALIGN_RIGHT;
   hadc1.Init.GainCompensation = 0;
@@ -592,7 +593,7 @@ static void MX_TIM1_Init(void)
   htim1.Instance = TIM1;
   htim1.Init.Prescaler = 0;
   htim1.Init.CounterMode = TIM_COUNTERMODE_UP;
-  htim1.Init.Period = 2099;
+  htim1.Init.Period = 1199;
   htim1.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
   htim1.Init.RepetitionCounter = 0;
   htim1.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
@@ -672,7 +673,7 @@ static void MX_TIM2_Init(void)
   htim2.Instance = TIM2;
   htim2.Init.Prescaler = 0;
   htim2.Init.CounterMode = TIM_COUNTERMODE_UP;
-  htim2.Init.Period = 2704;
+  htim2.Init.Period = 1543;
   htim2.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
   htim2.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
   if (HAL_TIM_Base_Init(&htim2) != HAL_OK)
@@ -705,14 +706,18 @@ static void MX_DMA_Init(void)
   /* DMA controller clock enable */
   __HAL_RCC_DMAMUX1_CLK_ENABLE();
   __HAL_RCC_DMA1_CLK_ENABLE();
+  __HAL_RCC_DMA2_CLK_ENABLE();
 
   /* DMA interrupt init */
   /* DMA1_Channel1_IRQn interrupt configuration */
   HAL_NVIC_SetPriority(DMA1_Channel1_IRQn, 0, 0);
   HAL_NVIC_EnableIRQ(DMA1_Channel1_IRQn);
-  /* DMA1_Channel2_IRQn interrupt configuration */
-  HAL_NVIC_SetPriority(DMA1_Channel2_IRQn, 0, 0);
-  HAL_NVIC_EnableIRQ(DMA1_Channel2_IRQn);
+  /* DMA2_Channel1_IRQn interrupt configuration */
+  HAL_NVIC_SetPriority(DMA2_Channel1_IRQn, 0, 0);
+  HAL_NVIC_EnableIRQ(DMA2_Channel1_IRQn);
+  /* DMAMUX_OVR_IRQn interrupt configuration */
+  HAL_NVIC_SetPriority(DMAMUX_OVR_IRQn, 0, 0);
+  HAL_NVIC_EnableIRQ(DMAMUX_OVR_IRQn);
 
 }
 
@@ -873,8 +878,8 @@ void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef *hadc)
 {
 	uint8_t len = DMA_BUF_LEN/2;
 	uint8_t halfIndex = len-1;
-	memcpy(tx_buffer[halfIndex],adc1_dma_buf_mixer_out[halfIndex],len);
-	while (CDC_Transmit_FS(tx_buffer[halfIndex], len) != USBD_OK);
+//	memcpy(tx_buffer[halfIndex],adc1_dma_buf_mixer_out[halfIndex],len);
+	CDC_Transmit_FS(&adc1_dma_buf_mixer_out[len], len);
 }
 
 /**
@@ -885,8 +890,9 @@ void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef *hadc)
 void HAL_ADC_ConvHalfCpltCallback(ADC_HandleTypeDef *hadc)
 {
 	uint8_t len = DMA_BUF_LEN/2;
-	memcpy(tx_buffer,adc1_dma_buf_mixer_out,len);
-	while (CDC_Transmit_FS(tx_buffer,len) != USBD_OK);
+	uint8_t halfIndex = len-1;
+//	memcpy(tx_buffer[0],adc1_dma_buf_mixer_out[0],len);
+	CDC_Transmit_FS(&adc1_dma_buf_mixer_out[0], len);
 }
 
 
@@ -899,7 +905,7 @@ void HAL_ADC_ConvHalfCpltCallback(ADC_HandleTypeDef *hadc)
 void process_input(const uint8_t *arr, control *pControl) {
 	uint8_t messageIn[] ="processing input";
 	uint8_t messageComplete[] ="processing complete";
-	CDC_Transmit_FS(messageIn,sizeof(messageIn));
+//	CDC_Transmit_FS(messageIn,sizeof(messageIn));
 	uint8_t mode[]={'m','o','d','e',':'};
     uint8_t time[] = {'t','i','m','e',':'};
     int i = 0;
@@ -909,7 +915,7 @@ void process_input(const uint8_t *arr, control *pControl) {
         i++;
     }
     // set mode in command
-    // pControl->mode_instr ucted=arr[i];
+    pControl->mode_instructed=arr[i];
     // move index past command for mode and '\n'
     while (arr[i]!='t') {
         i++;
@@ -934,7 +940,7 @@ void process_input(const uint8_t *arr, control *pControl) {
         pControl->run_time_sec=(pControl->run_time_sec*10)+arr[i]-48;
         i++;
     }
-	CDC_Transmit_FS(messageComplete,sizeof(messageComplete));
+//	CDC_Transmit_FS(messageComplete,sizeof(messageComplete));
 }
 
 void set_VCO_input_DAC(control *ctrl_ptr) {
