@@ -1,18 +1,24 @@
 # Python code transmits a byte to Arduino /Microcontroller
-
+import numpy
 import serial
 import sys
 import time
 from numpy.fft import fft
 import struct
 import os
+import matplotlib.pyplot as plt
 
 output_file = 'output.txt'
 
+
 def init_serial_connection():
     serial_obj = 0
+    platform = sys.platform
     try:
-        serial_obj = serial.Serial('COM5')  # ttyUSBx format on Linux / COMx format for Windows
+        if platform == "win32":
+            serial_obj = serial.Serial('COM5')  # ttyUSBx format on Linux / COMx format for Windows
+        else:
+            serial_obj = serial.Serial('/dev/ttyACM1')  # ttyUSBx format on Linux / COMx format for Windows
     except serial.serialutil.SerialException as error:
         print(error)
         print('exiting')
@@ -25,11 +31,12 @@ def init_serial_connection():
     time.sleep(1)
     return serial_obj
 
+
 if __name__ == '__main__':
     run_mode = {'range': 'r', 'speed': 's'}  # dictionary of running modes
     len_time_sec = 5  # time in seconds for range measurement
     delay_time_sec = 0.5
-
+    data_set = []
     command = str('mode:' + run_mode.get('range')) + '\n' + 'time:' + str(len_time_sec) + '\n'
     print('sending: ', end='')
     print(bytes(command, encoding='latin-1'))
@@ -44,6 +51,20 @@ if __name__ == '__main__':
             print(num)
             f.write(str(num))
             f.write('\n')
+            data_set.append(num)
         stm_serial_com.close()
 
-print('Output saved to ' + os.path.abspath(output_file))
+    print('Output saved to ' + os.path.abspath(output_file))
+
+    data_set = numpy.array(data_set)*(3.3/65536)
+    plt.figure(1)
+    plt.plot(data_set)
+    plt.title("data returned")
+    plt.xlabel("sample")
+    plt.ylabel("amplitude (V)")
+    plt.ylim([0, 3.3])
+
+    plt.figure(2)
+    fft_data = fft(data_set)
+    plt.plot(numpy.abs(fft_data))
+    plt.show()
