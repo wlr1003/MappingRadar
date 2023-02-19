@@ -46,7 +46,7 @@ typedef struct Control {
 /* Private macro -------------------------------------------------------------*/
 /* USER CODE BEGIN PM */
 #define TX_BUF_DIM 1000 // buffer length for usb transmitting
-#define DMA_BUF_LEN 200 // buffer length for adc1 dma, mixer o/p
+#define DMA_BUF_LEN 256 // buffer length for adc1 dma, mixer o/p
 /* USER CODE END PM */
 
 /* Private variables ---------------------------------------------------------*/
@@ -432,21 +432,25 @@ static void MX_ADC1_Init(void)
   /** Common config
   */
   hadc1.Instance = ADC1;
-  hadc1.Init.ClockPrescaler = ADC_CLOCK_SYNC_PCLK_DIV4;
+  hadc1.Init.ClockPrescaler = ADC_CLOCK_ASYNC_DIV1;
   hadc1.Init.Resolution = ADC_RESOLUTION_12B;
   hadc1.Init.DataAlign = ADC_DATAALIGN_RIGHT;
   hadc1.Init.GainCompensation = 0;
   hadc1.Init.ScanConvMode = ADC_SCAN_DISABLE;
   hadc1.Init.EOCSelection = ADC_EOC_SINGLE_CONV;
   hadc1.Init.LowPowerAutoWait = DISABLE;
-  hadc1.Init.ContinuousConvMode = ENABLE;
+  hadc1.Init.ContinuousConvMode = DISABLE;
   hadc1.Init.NbrOfConversion = 1;
   hadc1.Init.DiscontinuousConvMode = DISABLE;
   hadc1.Init.ExternalTrigConv = ADC_EXTERNALTRIG_T1_TRGO;
-  hadc1.Init.ExternalTrigConvEdge = ADC_EXTERNALTRIGCONVEDGE_RISING;
+  hadc1.Init.ExternalTrigConvEdge = ADC_EXTERNALTRIGCONVEDGE_RISINGFALLING;
   hadc1.Init.DMAContinuousRequests = ENABLE;
   hadc1.Init.Overrun = ADC_OVR_DATA_PRESERVED;
-  hadc1.Init.OversamplingMode = DISABLE;
+  hadc1.Init.OversamplingMode = ENABLE;
+  hadc1.Init.Oversampling.Ratio = ADC_OVERSAMPLING_RATIO_16;
+  hadc1.Init.Oversampling.RightBitShift = ADC_RIGHTBITSHIFT_NONE;
+  hadc1.Init.Oversampling.TriggeredMode = ADC_TRIGGEREDMODE_SINGLE_TRIGGER;
+  hadc1.Init.Oversampling.OversamplingStopReset = ADC_REGOVERSAMPLING_CONTINUED_MODE;
   if (HAL_ADC_Init(&hadc1) != HAL_OK)
   {
     Error_Handler();
@@ -586,9 +590,9 @@ static void MX_TIM1_Init(void)
 
   /* USER CODE END TIM1_Init 1 */
   htim1.Instance = TIM1;
-  htim1.Init.Prescaler = 210-1;
+  htim1.Init.Prescaler = 0;
   htim1.Init.CounterMode = TIM_COUNTERMODE_UP;
-  htim1.Init.Period = 9;
+  htim1.Init.Period = 2099;
   htim1.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
   htim1.Init.RepetitionCounter = 0;
   htim1.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
@@ -869,7 +873,6 @@ void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef *hadc)
 {
 	memcpy(tx_buffer,adc1_dma_buf_mixer_out[DMA_BUF_LEN/2-1],DMA_BUF_LEN/2);
 	CDC_Transmit_FS(tx_buffer, DMA_BUF_LEN/2);
-
 }
 
 /**
@@ -880,12 +883,12 @@ void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef *hadc)
 void HAL_ADC_ConvHalfCpltCallback(ADC_HandleTypeDef *hadc)
 {
 	uint8_t len = DMA_BUF_LEN/2;
-	uint8_t m1 = 'sending first half';
-	uint8_t m2 = 'first half sent';
+//	uint8_t m1 = 'sending first half';
+//	uint8_t m2 = 'first half sent';
 	memcpy(tx_buffer,adc1_dma_buf_mixer_out,len);
-	CDC_Transmit_FS(m1,sizeof(m1));
+//	CDC_Transmit_FS(m1,sizeof(m1));
 	CDC_Transmit_FS(tx_buffer,len);
-	CDC_Transmit_FS(m2,sizeof(m2));
+//	CDC_Transmit_FS(m2,sizeof(m2));
 }
 
 
@@ -908,7 +911,7 @@ void process_input(const uint8_t *arr, control *pControl) {
         i++;
     }
     // set mode in command
-    pControl->mode_instructed=arr[i];
+    // pControl->mode_instr ucted=arr[i];
     // move index past command for mode and '\n'
     while (arr[i]!='t') {
         i++;
@@ -934,9 +937,7 @@ void process_input(const uint8_t *arr, control *pControl) {
         i++;
     }
 	CDC_Transmit_FS(messageComplete,sizeof(messageComplete));
-
 }
-
 
 void set_VCO_input_DAC(control *ctrl_ptr) {
 	// if currently running is as instructed, return
