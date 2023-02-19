@@ -871,8 +871,10 @@ void HAL_SPI_TxRxCpltCallback(SPI_HandleTypeDef *hspi)
   */
 void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef *hadc)
 {
-	memcpy(tx_buffer,adc1_dma_buf_mixer_out[DMA_BUF_LEN/2-1],DMA_BUF_LEN/2);
-	CDC_Transmit_FS(tx_buffer, DMA_BUF_LEN/2);
+	uint8_t len = DMA_BUF_LEN/2;
+	uint8_t halfIndex = len-1;
+	memcpy(tx_buffer[halfIndex],adc1_dma_buf_mixer_out[halfIndex],len);
+	while (CDC_Transmit_FS(tx_buffer[halfIndex], len) != USBD_OK);
 }
 
 /**
@@ -883,12 +885,8 @@ void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef *hadc)
 void HAL_ADC_ConvHalfCpltCallback(ADC_HandleTypeDef *hadc)
 {
 	uint8_t len = DMA_BUF_LEN/2;
-//	uint8_t m1 = 'sending first half';
-//	uint8_t m2 = 'first half sent';
 	memcpy(tx_buffer,adc1_dma_buf_mixer_out,len);
-//	CDC_Transmit_FS(m1,sizeof(m1));
-	CDC_Transmit_FS(tx_buffer,len);
-//	CDC_Transmit_FS(m2,sizeof(m2));
+	while (CDC_Transmit_FS(tx_buffer,len) != USBD_OK);
 }
 
 
