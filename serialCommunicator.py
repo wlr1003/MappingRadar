@@ -1,4 +1,8 @@
-# Python code transmits a byte to Arduino /Microcontroller
+
+# MappingRadar Control Script
+# Made by William Ralston & Evan Stenger
+# ECE 791/792
+
 import numpy
 import serial
 import sys
@@ -9,7 +13,6 @@ import os
 import matplotlib.pyplot as plt
 
 output_file = 'output.txt'
-
 
 def init_serial_connection():
     serial_obj = 0
@@ -34,7 +37,7 @@ def init_serial_connection():
 
 if __name__ == '__main__':
     run_mode = {'range': 'r', 'speed': 's'}  # dictionary of running modes
-    len_time_sec = 5  # time in seconds for range measurement
+    len_time_sec = 10  # time in seconds for range measurement
     delay_time_sec = 0.5
     data_set = []
     command = str('mode:' + run_mode.get('range')) + '\n' + 'time:' + str(len_time_sec) + '\n'
