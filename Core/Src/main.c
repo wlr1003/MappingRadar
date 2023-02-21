@@ -46,7 +46,7 @@ typedef struct Control {
 /* Private macro -------------------------------------------------------------*/
 /* USER CODE BEGIN PM */
 #define TX_BUF_DIM 512 // buffer length for usb transmitting
-#define DMA_BUF_LEN 32 // buffer length for adc1 dma, mixer o/p
+#define DMA_BUF_LEN 64 // buffer length for adc1 dma, mixer o/p
 
 /* USER CODE END PM */
 
@@ -444,7 +444,7 @@ static void MX_ADC1_Init(void)
   hadc1.Init.NbrOfConversion = 1;
   hadc1.Init.DiscontinuousConvMode = DISABLE;
   hadc1.Init.ExternalTrigConv = ADC_EXTERNALTRIG_T1_TRGO;
-  hadc1.Init.ExternalTrigConvEdge = ADC_EXTERNALTRIGCONVEDGE_RISINGFALLING;
+  hadc1.Init.ExternalTrigConvEdge = ADC_EXTERNALTRIGCONVEDGE_RISING;
   hadc1.Init.DMAContinuousRequests = ENABLE;
   hadc1.Init.Overrun = ADC_OVR_DATA_PRESERVED;
   hadc1.Init.OversamplingMode = ENABLE;
@@ -715,9 +715,6 @@ static void MX_DMA_Init(void)
   /* DMA2_Channel1_IRQn interrupt configuration */
   HAL_NVIC_SetPriority(DMA2_Channel1_IRQn, 0, 0);
   HAL_NVIC_EnableIRQ(DMA2_Channel1_IRQn);
-  /* DMAMUX_OVR_IRQn interrupt configuration */
-  HAL_NVIC_SetPriority(DMAMUX_OVR_IRQn, 0, 0);
-  HAL_NVIC_EnableIRQ(DMAMUX_OVR_IRQn);
 
 }
 
@@ -931,7 +928,7 @@ void process_input(const uint8_t *arr, control *pControl) {
     while (arr[j]!='\n') {
         j++;
     }
-    // set runt time to zero
+    // set run time to zero
     pControl->run_time_sec=0;
     // add each digits value,
     // *10 to shift current value left one digit for adding next digit
