@@ -265,7 +265,11 @@ static int32_t platform_read(void *handle, uint8_t Reg, uint8_t *Bufp, uint16_t 
 // usb transmit
 extern uint8_t CDC_Transmit_FS(uint8_t* Buf, uint16_t Len);
 void process_input(const uint8_t *arr, control *pControl);
+uint8_t strcontains(const char* str1,const char* str2);
+void my_strcpy(char* cpy, const char* orig, uint8_t len);
+uint8_t isValid(const char checkChar,const char* validModes);
 void set_VCO_input_DAC(control *ctrl_ptr);
+
 
 /* USER CODE END PFP */
 
@@ -357,7 +361,7 @@ user_input.run_time_sec=0; // length of time in seconds to operate
 	  }
 	  else
 	  {
-	 	    	HAL_Delay(250);
+//	 	    	HAL_Delay(250);
 	  }
     /* USER CODE END WHILE */
 
@@ -903,42 +907,99 @@ void process_input(const uint8_t *arr, control *pControl) {
 	uint8_t messageIn[] ="processing input";
 	uint8_t messageComplete[] ="processing complete";
 //	CDC_Transmit_FS(messageIn,sizeof(messageIn));
-	uint8_t mode[]={'m','o','d','e',':'};
-    uint8_t time[] = {'t','i','m','e',':'};
-    int i = 0;
-    int j = 0;
+	char mode[]="mode:";
+    char time[] = "time:";
+    char validMode[] = {'r', 's', 'm'}; // range speed map
+    char word[64] = {0};
+    uint8_t i = sizeof(mode);
+    uint8_t j= sizeof(time);
     // check input to ensure "mode:" is received
-    while (arr[i]==mode[i]) {
-        i++;
+    my_strcpy(word, arr, i);
+    if (strcontains(word,mode)) {
+    	if (isValid(arr[i-1],validMode)) {
+    		pControl->mode_instructed=arr[i-1];     // set mode in command
+    	}
+    	else { // invalid mode command
+    		return;
+    	}
     }
-    // set mode in command
-    pControl->mode_instructed=arr[i];
-    // move index past command for mode and '\n'
-    while (arr[i]!='t') {
-        i++;
+    else { // invalid command
+    	return;
+    }
+    // move index past command for mode and then '\n'
+    while(arr[i]=='\n') {
+    	i++;
     }
     // check input to ensure "time:" is received
-    while (arr[i]==time[j]) {
-        i++;
-        j++;
-    }
-    // set j to index one past first digit of command for time
-    j=i+1;
-    // get index of last digit
-    while (arr[j]!='\n') {
-        j++;
-    }
-    // set run time to zero
-    pControl->run_time_sec=0;
-    // add each digits value,
-    // *10 to shift current value left one digit for adding next digit
-    // -48 converts from ascii to int
-    while (i < j) {
-        pControl->run_time_sec=(pControl->run_time_sec*10)+arr[i]-48;
-        i++;
-    }
+    my_strcpy(word, &arr[i], j);
+    	if (strcontains(word,time)) {//mode:r\ntime:10
+    	   // set i to index one past command for time
+			i=i+j-1;
+			j=i+1;
+			// get index of last digit
+			while (arr[j]!='\n'&& arr[j]!='\0') {
+			j++;
+			}
+			// set run time to zero
+			pControl->run_time_sec=0;
+			// add each digits value,
+			// *10 to shift current value left one digit for adding next digit
+			// -48 converts from ascii to int
+			while (i < j) {
+			pControl->run_time_sec=(pControl->run_time_sec*10)+arr[i]-48;
+			i++;
+			}
+       }
 //	CDC_Transmit_FS(messageComplete,sizeof(messageComplete));
 }
+
+/*
+ * Compare two strings,
+ * return 1 for same string, 0 for different strings
+ */
+uint8_t strcontains(const char* str1,const char* str2) {
+	  uint8_t i = 0, strings_match = 1; // strings match = true
+	  while (str2[i]!='\0') { // while both strings have a character
+		  if(str1[i] != str2[i]) {		// if check character doesn't match
+			  	  strings_match = 0;	// strings match = false
+		  }
+		  i++;
+	  }
+	  if (str2[i]!='\0') { // if either string has a character
+	        strings_match = 0;	// strings match = false
+	  }
+	  return strings_match;
+}
+
+/*
+ * copy original string into copy
+ * len is original strings length
+ * WARNING copy must be adequate length
+ * will stop early on null byte
+ */
+void my_strcpy(char* cpy, const char* orig, uint8_t len) {
+	uint8_t i = 0;
+	while(orig[i]!='\0' && i<=len) {
+		cpy[i]=orig[i];
+		i++;
+	}
+}
+
+/*
+ * checks the checkChar is within the validModes char*
+ * returns 1 for true, 0 for false
+ */
+uint8_t isValid(const char checkChar,const char* validModes) {
+	uint8_t i;
+	for(i=0;sizeof(validModes);i++) {
+		if (checkChar==validModes[i]) {
+			return 1;
+		}
+	}
+	return 0;
+}
+
+
 
 void set_VCO_input_DAC(control *ctrl_ptr) {
 	// if currently running is as instructed, return

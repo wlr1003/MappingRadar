@@ -261,13 +261,16 @@ static int8_t CDC_Control_FS(uint8_t cmd, uint8_t* pbuf, uint16_t length)
 static int8_t CDC_Receive_FS(uint8_t* Buf, uint32_t *Len)
 {
   /* USER CODE BEGIN 6 */
-  input_received_flag = 1;
-  memset (UserRxBufferFS, '\0', APP_RX_DATA_SIZE);  // clear the buffer
-  uint8_t len = (uint8_t) Len;
-  memcpy(UserRxBufferFS, Buf, len);  // copy the data to the buffer
-  memset(Buf, '\0', len);   // clear the Buf also
+//  memset (UserRxBufferFS, '\0', APP_RX_DATA_SIZE);  // clear the buffer
+//  uint8_t len = (uint8_t) Len;
+//  if (Buf[0]!='\0') {
+//	  memcpy(UserRxBufferFS, Buf, len);  // copy the data to the buffer
+//	  memset(Buf, '\0', len);   // clear the Buf also
+	  input_received_flag = 1;
+//  }
   USBD_CDC_SetRxBuffer(&hUsbDeviceFS, &Buf[0]);
   USBD_CDC_ReceivePacket(&hUsbDeviceFS);
+
   return (USBD_OK);
   /* USER CODE END 6 */
 }
