@@ -57,12 +57,15 @@ DMA_HandleTypeDef hdma_adc1;
 DAC_HandleTypeDef hdac1;
 DMA_HandleTypeDef hdma_dac1_ch1;
 
+I2C_HandleTypeDef hi2c2;
+
 SPI_HandleTypeDef hspi1;
 
 TIM_HandleTypeDef htim1;
 TIM_HandleTypeDef htim2;
 
 /* USER CODE BEGIN PV */
+static const uint8_t DIGITAL_POT_ADDR = 0x2f; // Use 7-bit address '0101111' for digital potentiometer
 static uint16_t adc1_dma_buf_mixer_out[DMA_BUF_LEN];
 static int16_t data_raw_acceleration[3];
 static int16_t data_raw_angular_rate[3];
@@ -256,6 +259,7 @@ static void MX_DAC1_Init(void);
 static void MX_TIM2_Init(void);
 static void MX_SPI1_Init(void);
 static void MX_TIM1_Init(void);
+static void MX_I2C2_Init(void);
 /* USER CODE BEGIN PFP */
 // platform read/write used to read/write to lsm6dsl
 /** Please note that is MANDATORY: return 0 -> no Error.**/
@@ -288,6 +292,7 @@ int main(void)
 input_received_flag = 0;
 uint8_t message2[] ="message in";
 uint8_t lsm6dslError[] ="LSM6DSL whoAmI error";
+//uint8_t
 
 
 // initialize command struct
@@ -322,11 +327,14 @@ user_input.run_time_sec=0; // length of time in seconds to operate
   MX_SPI1_Init();
   MX_USB_Device_Init();
   MX_TIM1_Init();
+  MX_I2C2_Init();
   /* USER CODE BEGIN 2 */
   set_VCO_input_DAC(&user_input); // starts timer and sets dac output used for VCO
   HAL_TIM_Base_Start(&htim1); // start timer 1 for adc1 conversion for radar mixer o/p
   HAL_TIM_OC_Start(&htim1, TIM_CHANNEL_3); // sets output compare for timer1, sets PA10 to toggle on timer1 register reload (40kHz)
   HAL_ADC_Start_DMA(&hadc1, (uint32_t*)adc1_dma_buf_mixer_out, DMA_BUF_LEN); // start the adc with dma
+
+//  HAL_I2C_Master_Transmit(&hi2c2, DIGITAL_POT_ADDR, buf, 1, HAL_MAX_DELAY);
 
   /* initialize accelerometer/gyroscope on lsm6dsl */
   stmdev_ctx_t dev_ctx;
@@ -531,6 +539,54 @@ static void MX_DAC1_Init(void)
   /* USER CODE BEGIN DAC1_Init 2 */
 
   /* USER CODE END DAC1_Init 2 */
+
+}
+
+/**
+  * @brief I2C2 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_I2C2_Init(void)
+{
+
+  /* USER CODE BEGIN I2C2_Init 0 */
+
+  /* USER CODE END I2C2_Init 0 */
+
+  /* USER CODE BEGIN I2C2_Init 1 */
+
+  /* USER CODE END I2C2_Init 1 */
+  hi2c2.Instance = I2C2;
+  hi2c2.Init.Timing = 0x10B0DCFB;
+  hi2c2.Init.OwnAddress1 = 0;
+  hi2c2.Init.AddressingMode = I2C_ADDRESSINGMODE_7BIT;
+  hi2c2.Init.DualAddressMode = I2C_DUALADDRESS_DISABLE;
+  hi2c2.Init.OwnAddress2 = 0;
+  hi2c2.Init.OwnAddress2Masks = I2C_OA2_NOMASK;
+  hi2c2.Init.GeneralCallMode = I2C_GENERALCALL_DISABLE;
+  hi2c2.Init.NoStretchMode = I2C_NOSTRETCH_DISABLE;
+  if (HAL_I2C_Init(&hi2c2) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** Configure Analogue filter
+  */
+  if (HAL_I2CEx_ConfigAnalogFilter(&hi2c2, I2C_ANALOGFILTER_ENABLE) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** Configure Digital filter
+  */
+  if (HAL_I2CEx_ConfigDigitalFilter(&hi2c2, 0) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN I2C2_Init 2 */
+
+  /* USER CODE END I2C2_Init 2 */
 
 }
 
@@ -755,22 +811,6 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
 
-  /*Configure GPIO pin : PA8 */
-  GPIO_InitStruct.Pin = GPIO_PIN_8;
-  GPIO_InitStruct.Mode = GPIO_MODE_AF_OD;
-  GPIO_InitStruct.Pull = GPIO_NOPULL;
-  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
-  GPIO_InitStruct.Alternate = GPIO_AF2_I2C3;
-  HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
-
-  /*Configure GPIO pin : PA9 */
-  GPIO_InitStruct.Pin = GPIO_PIN_9;
-  GPIO_InitStruct.Mode = GPIO_MODE_AF_OD;
-  GPIO_InitStruct.Pull = GPIO_NOPULL;
-  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
-  GPIO_InitStruct.Alternate = GPIO_AF4_I2C2;
-  HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
-
   /*Configure GPIO pin : LSM6DSL_ncs_Pin */
   GPIO_InitStruct.Pin = LSM6DSL_ncs_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
@@ -891,7 +931,6 @@ void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef *hadc)
 void HAL_ADC_ConvHalfCpltCallback(ADC_HandleTypeDef *hadc)
 {
 	uint8_t len = DMA_BUF_LEN/2;
-	uint8_t halfIndex = len-1;
 //	memcpy(tx_buffer[0],adc1_dma_buf_mixer_out[0],len);
 	CDC_Transmit_FS(&adc1_dma_buf_mixer_out[0], len);
 }

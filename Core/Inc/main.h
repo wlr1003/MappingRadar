@@ -61,6 +61,10 @@ void Error_Handler(void);
 /* Private defines -----------------------------------------------------------*/
 #define mixer_op_filtered_Pin GPIO_PIN_0
 #define mixer_op_filtered_GPIO_Port GPIOA
+#define I2C2_SDA_digital_pot_Pin GPIO_PIN_8
+#define I2C2_SDA_digital_pot_GPIO_Port GPIOA
+#define I2C2_SCL_digital_pot_Pin GPIO_PIN_9
+#define I2C2_SCL_digital_pot_GPIO_Port GPIOA
 #define LSM6DSL_ncs_Pin GPIO_PIN_15
 #define LSM6DSL_ncs_GPIO_Port GPIOA
 /* USER CODE BEGIN Private defines */
