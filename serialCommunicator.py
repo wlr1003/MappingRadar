@@ -18,26 +18,31 @@ import matplotlib.pyplot as plt
 ############################################
 # Set time and mode defaults
 TIME_DEFAULT = 10
-MODE_DEFAULT = 'speed'
+MODE_DEFAULT = 'range'
 #  turn off connection to stm32, loads file as data to process
 CONNECT_TO_STM = False
-load_file = "outputCans2.txt"  # file to load to get data to process
+load_file = "outputCans6.txt"  # file to load to get data to process
 
 SAMPLING_FREQUENCY = 40000  # radar sampling frequency
 SAMPLING_BITS = 2 ** 16  # 16 bit samples
 CTUNE_FREQUENCY = 2455650000  # 2.45 GHz measured on spectrum analyzer
-MAX_RANGE_METERS = 100
+VTUNE_BANDWIDTH = 100000000  # Bandwidth of vtune signal from VCO
+VTUNE_PERIOD = 0.04  # period of vtune set by DAC output in s
+MAX_RANGE_METERS = 10
 MAX_SPEED_KMH = 200  # 200kmh ~ 124mph
-output_file = 'outputCans7.txt'  # file name to create and save returned data
+output_file = 'output.txt'  # file name to create and save returned data
 
 
 class Signal_Processing_Control:
     def __init__(self):
+        self.emd_analysis = False   # turn on/off the emd analysis
         self.sift_stop_criteria = ['standard deviation', 0.025]  # only standard deviation implemented so far
         self.emd_stop_criteria = ['n times', 5]  # ['n times', 10] or None
-        self.plot_imfs = True
-        self.data_set = []
-        self._figure_num = 0
+        self.plot_imfs = True   # turn on/off plots of recovered imf's
+        self.plot_preprocessed = False   # turn on/off plot of signal received over time
+        self.data_set = np.array(0)
+        self.N_trimmed = 0      # number of samples after truncating data to be evenly divisible
+        self._figure_num = 0    # protected variable, used to keep track of figures
 
 # returns the current figure number used during plotting
     def fig_num(self):
@@ -68,11 +73,11 @@ def init_serial_connection():
     return serial_obj
 
 
-# removes data from end to truncate data set to last complete 100 ms block
+# removes data from end to truncate data set to last complete 40 ms block
 def trim_data(input_data):
     num_samples = np.shape(input_data)[0]  # get total sample number
     num_remove = int(
-        num_samples % (SAMPLING_FREQUENCY / 10))  # get remainder of total sample number and samples per 100 ms
+        num_samples % (SAMPLING_FREQUENCY * VTUNE_PERIOD))  # get remainder of total sample number and samples per 40 ms
     indexes_remove = np.array(
         [num_samples - i - 1 for i in range(num_remove)])  # create array of indexes to remove from data
     return np.delete(input_data, indexes_remove)  # return input data truncated to last full 100 ms block
@@ -135,9 +140,32 @@ def parse_input_args():
 def process_as_speed_data(data, speed):
     max_delt_freq = speed / constants.speed_of_light * CTUNE_FREQUENCY  # del_f = (Ve/c)*fc
     # keep fft data proportional to MAX_SPEED
-    num_keep = int(N_padded / SAMPLING_FREQUENCY * max_delt_freq)
+    num_keep = get_max_freq_index(max_delt_freq)
     data = data[:, :num_keep]
     return data
+
+
+def process_as_range_data(data, control: Signal_Processing_Control):
+    # assume all targets are stationary,
+    # data is mixer signal which is difference between current transmit and time delayed return signals
+    ramp_rate = VTUNE_BANDWIDTH / (VTUNE_PERIOD / 2)  # rate of change of vtune signal
+    # range=(c*f_m)/(2*ramp_rate)
+    # fm_max=range_max*(2*ramp_rate/c)
+    max_delt_freq = MAX_RANGE_METERS * 2 * ramp_rate / constants.speed_of_light
+    num_keep = get_max_freq_index(max_delt_freq)
+    data = data[:, :num_keep]
+    plt.figure(control.fig_num())
+    range_data = np.transpose(np.abs(data))
+    aspect_ratio = np.shape(data)[0] / np.shape(data)[1] * (6/5)
+    plt.imshow(range_data, origin='lower', aspect=aspect_ratio, extent=[0, total_time, 0, MAX_RANGE_METERS])
+    plt.title("Range of Target")
+    plt.xlabel('Time (s)')
+    plt.ylabel('Distance (m)')
+
+
+def get_max_freq_index(max_delt_freq):
+    num_keep = int(N_padded / SAMPLING_FREQUENCY * max_delt_freq)
+    return num_keep
 
 
 def emd(data_1d: np.ndarray, ctrl: Signal_Processing_Control):
@@ -157,7 +185,7 @@ def emd(data_1d: np.ndarray, ctrl: Signal_Processing_Control):
             # find maxima/minima of data set
             maxima = signal.argrelmax(current_residual)[0]  # returns a tuple of indexes
             minima = signal.argrelmin(current_residual)[0]
-            if len(maxima) == 0 or len(minima) == 0:
+            if len(maxima) <= 3 or len(minima) <= 3:
                 emd_stop_criteria_met = True
                 break
             # interpolate the maxima/minima using a cubic spline
@@ -167,9 +195,11 @@ def emd(data_1d: np.ndarray, ctrl: Signal_Processing_Control):
             upper_spline = upper_spline(range(len(x_axis)))
             lower_spline = lower_spline(range(len(x_axis)))
             spline_mean = np.mean([upper_spline, lower_spline], axis=0)  # find the mean of the spline envelope
+            # debug plot
             # plt.figure(10)
             # plt.plot(x_axis,current_residual,label='current residual pre')
-            current_residual -= np.reshape(spline_mean,current_residual.shape)
+
+            current_residual -= np.reshape(spline_mean, current_residual.shape)
 
             # plt.plot(x_axis,current_residual, label='current residual post')
             # plt.plot(x_axis,spline_mean, label='spline mean')
@@ -207,36 +237,48 @@ def is_monotonic(residual: np.array):
 def plot_imfs(imfs: np.array, ctrl):
     x_axis_time = np.arange(0, len(imfs[0][0]) / SAMPLING_FREQUENCY, 1 / SAMPLING_FREQUENCY)  # generate an x-axis of time
     num = 1
-    for i in range(1):
-        for imf in imfs[i]:
-            plt.figure(ctrl.fig_num())
-            plt.plot(x_axis_time, imf)
-            plt.title('IMF ' + str(num))
-            num += 1
-            plt.xlabel('Time (s)')
-            plt.ylabel('Amplitude')
+    for imf in imfs[0]:
+        plt.figure(ctrl.fig_num())
+        plt.plot(x_axis_time, imf)
+        plt.title('IMF ' + str(num))
+        num += 1
+        plt.xlabel('Time (s)')
+        plt.ylabel('Amplitude')
 
 
 def plot_speed_result(data, speed, ctrl):
     plt.figure(ctrl.fig_num())
     range_data = np.transpose(np.abs(data))
-    aspect_ratio = np.shape(data)[0] / np.shape(data)[1] * (5 / 7)
+    aspect_ratio = np.shape(data)[0] / np.shape(data)[1] * (3 / 7)
     plt.imshow(range_data, origin='lower', aspect=aspect_ratio, extent=[0, total_time, 0, speed])
     plt.title("Speed of Target")
     plt.xlabel('Time (s)')
     plt.ylabel('Speed (m/s)')
 
 
+def plot_signal_over_time(ctrl):
+    t = np.arange(0, ctrl.N_trimmed / SAMPLING_FREQUENCY, 1 / SAMPLING_FREQUENCY)
+    # plot of entire data set
+    plt.figure(ctrl.fig_num())
+    plt.plot(t, ctrl.data_set)
+    plt.title("Data Returned scaled to Voltage Applied to the ADC")
+    plt.xlabel("Time (sec)")
+    plt.ylabel("Amplitude (V)")
+    plt.ylim([0, 3.3])
+
+
 if __name__ == '__main__':
+    delay_time_sec = 0.5  # delay added to ensure all samples transferred
+    N_padded = 2 ** 16  # padding used for increased resolution of fft
     run_mode = {'range': 'r', 'speed': 's', 'map': 'm'}  # dictionary of running modes
-    control = Signal_Processing_Control()
+    ctrl = Signal_Processing_Control()
     # parse input args, set default values if no argument given
     len_time_sec, mode_selected = parse_input_args()
     if len_time_sec <= 0:
         len_time_sec = TIME_DEFAULT  # time in seconds for measurement
     if mode_selected == '':
         mode_selected = MODE_DEFAULT
-    delay_time_sec = 0.5  # delay added to ensure all samples transferred
+
     command = str('mode:' + run_mode.get(mode_selected) + '\n' + 'time:' + str(len_time_sec) + '\n').encode(
         encoding="utf-8")  # assemble  and encode command to send to stm32
 
@@ -244,7 +286,7 @@ if __name__ == '__main__':
         with open(output_file, 'w') as f:
             stm_serial_com = init_serial_connection()
             time_out = time.time() + len_time_sec + delay_time_sec  # calculate time to end data collection
-            data_set = []  # initialize list for data returned from stm32
+            # data_set = []  # initialize list for data returned from stm32
             print('sending: ', end='')
             print(command)
             while stm_serial_com.in_waiting:  # if data is in incoming buffer, read past all data
@@ -257,70 +299,73 @@ if __name__ == '__main__':
                 print(num)
                 f.write(str(num))  # save num to file
                 f.write('\n')  # add delimiter to file
-                data_set.append(num)  # append data to list of data returned
+                ctrl.data_set.append(num)  # append data to list of data returned
             stm_serial_com.close()
 
         print('Output saved to ' + os.path.abspath(output_file))
     else:
         print('Loading data from: ' + load_file)
-        data_set = np.loadtxt(load_file, comments="#", delimiter="\n", unpack=False)
+        ctrl.data_set = np.loadtxt(load_file, comments="#", delimiter="\n", unpack=False)
 
-    data_set = np.array(data_set) * (3.3 / SAMPLING_BITS)  # scale to voltage
-    data_set = trim_data(data_set)  # trim data to last complete 100ms block
-    N_trimmed = data_set.size  # get number of samples kept
-    N_padded = 65536  # padding used for increased resolution of fft
-    total_time = N_trimmed / SAMPLING_FREQUENCY
+    ctrl.data_set = np.array(ctrl.data_set) * (3.3 / SAMPLING_BITS)  # scale to voltage
+    ctrl.data_set = trim_data(ctrl.data_set)  # trim data to last complete block size
+    ctrl.N_trimmed = ctrl.data_set.size  # get number of samples kept
+    total_time = ctrl.N_trimmed / SAMPLING_FREQUENCY
 
-    # plot of entire data set
-    plt.figure(control.fig_num())
-    # t = np.array([i / SAMPLING_FREQUENCY for i in range(N_trimmed)])  # set t from 0 to time of last sample
-    t = np.arange(0, N_trimmed / SAMPLING_FREQUENCY, 1 / SAMPLING_FREQUENCY)
-    plt.plot(t, data_set)
-    plt.title("Data Returned scaled to Voltage Applied to ADC")
-    plt.xlabel("time (sec)")
-    plt.ylabel("amplitude (V)")
-    plt.ylim([0, 3.3])
+    # plot of signal in time domain scaled to input voltage of ADC
+    if ctrl.plot_preprocessed:
+        plot_signal_over_time(ctrl)
 
-    # plot of fft magnitude of entire data set vs frequency
-    plt.figure(control.fig_num())
-    fft_data = fft(data_set)
-    # set f to 0 to sampling frequency for x-axis
-    f = np.array([i * SAMPLING_FREQUENCY / (N_trimmed - 1) for i in range(N_trimmed)])
-    plt.plot(f, np.abs(fft_data))
-    plt.title("FFT of entire data set")
-    plt.ylabel("Magnitude")
-    plt.xlabel("Frequency (Hz)")
+    # remove DC offset
+    ctrl.data_set = ctrl.data_set-np.mean(ctrl.data_set)
+
+    if ctrl.plot_preprocessed:
+        # plot of fft magnitude of entire data set vs frequency
+        plt.figure(ctrl.fig_num())
+        fft_data = fft(ctrl.data_set)
+        # set f to 0 to sampling frequency for x-axis
+        f = np.array([i * SAMPLING_FREQUENCY / (ctrl.N_trimmed - 1) for i in range(ctrl.N_trimmed)])
+        plt.plot(f, np.abs(fft_data))
+        plt.title("FFT of entire data set")
+        plt.ylabel("Magnitude")
+        plt.xlabel("Frequency (Hz)")
 
     # split data set into array with each row being 100 ms of samples
-    data_split = np.array(np.split(data_set, int(N_trimmed / (SAMPLING_FREQUENCY / 10))))
-    # remove DC offset from data by removing mean from each 100ms row
-    mean = data_split.mean(axis=1)
-    data_split = data_split - mean[:, None]
+    data_split = np.array(np.split(ctrl.data_set, int(ctrl.N_trimmed / (SAMPLING_FREQUENCY * VTUNE_PERIOD))))
+
+    # remove ensemble mean from data by removing mean from each column
+    mean = data_split.mean(axis=0)
+    data_split = data_split - mean
+
     # take fft of every row with zero padding
     fft_data = fft(data_split, N_padded)
-    emd_data = []
-    emd_break = 0
-    for row in data_split:
-        emd_data.append(emd(row, control))
-        emd_break += 1
-        if emd_break > 1:
-            break
-    if control.plot_imfs and len(emd_data) > 0:
-        plot_imfs(emd_data, control)
-    # plot of fft for single 100ms row, row 20 chosen at random
-    plt.figure(control.fig_num())
-    # set f to 0 to sampling frequency for x-axis
-    f = np.array([i * SAMPLING_FREQUENCY / (N_padded - 1) for i in range(N_padded)])
-    # prevent errors if fft data has less than 2 seconds of data, take row 20 or last
-    slice_num = min(20, np.shape(fft_data)[0])
-    plt.plot(f, np.abs(fft_data[slice_num]))
-    plt.title("FFT of time slice " + str(slice_num))
-    plt.ylabel("Magnitude")
-    plt.xlabel("Frequency (Hz)")
+    if ctrl.emd_analysis:
+        emd_data = []
+        emd_break = 0
+        for row in data_split:
+            emd_data.append(emd(row, ctrl))
+            emd_break += 1
+            if emd_break > 1:
+                break
+        if ctrl.plot_imfs and len(emd_data) > 0:
+            plot_imfs(emd_data, ctrl)
+
+    # # plot of fft for single 100ms row, row 20 chosen at random
+    # plt.figure(ctrl.fig_num())
+    # # set f to 0 to sampling frequency for x-axis
+    # f = np.array([i * SAMPLING_FREQUENCY / (N_padded - 1) for i in range(N_padded)])
+    # # prevent errors if fft data has less than 2 seconds of data, take row 20 or last
+    # slice_num = min(20, np.shape(fft_data)[0])
+    # plt.plot(f, np.abs(fft_data[slice_num]))
+    # plt.title("FFT of time slice " + str(slice_num))
+    # plt.ylabel("Magnitude")
+    # plt.xlabel("Frequency (Hz)")
 
     if mode_selected == 'speed':
         speed_m_s = MAX_SPEED_KMH * 1000 / (60 * 60)  # convert km/h to m/s
         fft_data = process_as_speed_data(fft_data, speed_m_s)
-        plot_speed_result(fft_data, speed_m_s, control)
+        plot_speed_result(fft_data, speed_m_s, ctrl)
+    elif mode_selected == 'range':
+        process_as_range_data(fft_data, ctrl)
 
     plt.show()  # call only once for all plots
