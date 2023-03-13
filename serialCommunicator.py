@@ -40,7 +40,7 @@ class Signal_Processing_Control:
         self.emd_stop_criteria = ['n times', 5]  # ['n times', 10] or None
         self.plot_imfs = True   # turn on/off plots of recovered imf's
         self.plot_preprocessed = False   # turn on/off plot of signal received over time
-        self.data_set = np.array(0)
+        self.data_set = np.array(0)  # initialize data set to empty numpy array
         self.N_trimmed = 0      # number of samples after truncating data to be evenly divisible
         self._figure_num = 0    # protected variable, used to keep track of figures
 
@@ -149,8 +149,7 @@ def process_as_range_data(data, control: Signal_Processing_Control):
     # assume all targets are stationary,
     # data is mixer signal which is difference between current transmit and time delayed return signals
     ramp_rate = VTUNE_BANDWIDTH / (VTUNE_PERIOD / 2)  # rate of change of vtune signal
-    # range=(c*f_m)/(2*ramp_rate)
-    # fm_max=range_max*(2*ramp_rate/c)
+    # range=(c*f_m)/(2*ramp_rate)  rearranged to solve for fm: fm_max=range_max*(2*ramp_rate/c)
     max_delt_freq = MAX_RANGE_METERS * 2 * ramp_rate / constants.speed_of_light
     num_keep = get_max_freq_index(max_delt_freq)
     data = data[:, :num_keep]
@@ -286,7 +285,7 @@ if __name__ == '__main__':
         with open(output_file, 'w') as f:
             stm_serial_com = init_serial_connection()
             time_out = time.time() + len_time_sec + delay_time_sec  # calculate time to end data collection
-            # data_set = []  # initialize list for data returned from stm32
+            ctrl.data_set = []  # initialize list for data returned from stm32
             print('sending: ', end='')
             print(command)
             while stm_serial_com.in_waiting:  # if data is in incoming buffer, read past all data
