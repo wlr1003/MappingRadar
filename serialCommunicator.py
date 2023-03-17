@@ -11,6 +11,7 @@ import serial
 from scipy import signal
 from scipy import constants
 from scipy import interpolate
+from scipy.signal import hilbert
 import numpy as np
 from numpy.fft import fft
 import matplotlib.pyplot as plt
@@ -20,7 +21,7 @@ import matplotlib.pyplot as plt
 TIME_DEFAULT = 10
 MODE_DEFAULT = 'range'
 #  turn off connection to stm32, loads file as data to process
-CONNECT_TO_STM = False
+CONNECT_TO_STM = True
 load_file = "outputCans6.txt"  # file to load to get data to process
 
 SAMPLING_FREQUENCY = 40000  # radar sampling frequency
@@ -39,9 +40,10 @@ class Signal_Processing_Control:
         self.sift_stop_criteria = ['standard deviation', 0.025]  # only standard deviation implemented so far
         self.emd_stop_criteria = ['n times', 5]  # ['n times', 10] or None
         self.plot_imfs = True   # turn on/off plots of recovered imf's
-        self.plot_preprocessed = False   # turn on/off plot of signal received over time
+        self.plot_preprocessed = True   # turn on/off plot of signal received over time
         self.data_set = np.array(0)  # initialize data set to empty numpy array
         self.N_trimmed = 0      # number of samples after truncating data to be evenly divisible
+        self.print_time = True
         self._figure_num = 0    # protected variable, used to keep track of figures
 
 # returns the current figure number used during plotting
@@ -59,7 +61,7 @@ def init_serial_connection():
         if platform == "win32":
             serial_obj = serial.Serial('COM5')  # COMx format for Windows
         else:
-            serial_obj = serial.Serial('/dev/ttyACM0')  # ttyACMx format on Linux
+            serial_obj = serial.Serial('/dev/ttyACM1')  # ttyACMx format on Linux
     except serial.serialutil.SerialException as error:
         print(error)
         print('exiting')
@@ -217,6 +219,9 @@ def emd(data_1d: np.ndarray, ctrl: Signal_Processing_Control):
         # sifting is complete, record the current residual as the imf component
         intrinsic_mode_functions.append(current_residual)
         residual -= current_residual
+        if ctrl.print_time:
+            print(f'IMF {len(intrinsic_mode_functions)} found after sifting {sift_count} times.', end='')
+            print_time_elapsed(time_start)
         if ctrl.emd_stop_criteria and ctrl.emd_stop_criteria[0] == 'n times':
             if len(intrinsic_mode_functions) >= ctrl.emd_stop_criteria[1]:
                 emd_stop_criteria_met = True
@@ -233,16 +238,31 @@ def is_monotonic(residual: np.array):
     return np.all(difference) <= 0 or np.all(difference) >= 0
 
 
-def plot_imfs(imfs: np.array, ctrl):
-    x_axis_time = np.arange(0, len(imfs[0][0]) / SAMPLING_FREQUENCY, 1 / SAMPLING_FREQUENCY)  # generate an x-axis of time
-    num = 1
-    for imf in imfs[0]:
-        plt.figure(ctrl.fig_num())
+def plot_imfs(imfs: np.array,instantaneous_freq: np.array,  control: Signal_Processing_Control):
+    x_axis_time = np.arange(0, len(imfs[0]) / SAMPLING_FREQUENCY, 1 / SAMPLING_FREQUENCY)  # generate an x-axis of time
+    num = 1  # num is index of imf used for plot title
+    avg = 3  # number of points to include in moving average
+
+    for imf in imfs:
+        plt.figure(control.fig_num())
+        plt.subplot(211)
         plt.plot(x_axis_time, imf)
         plt.title('IMF ' + str(num))
-        num += 1
         plt.xlabel('Time (s)')
         plt.ylabel('Amplitude')
+        num += 1
+
+        plt.subplot(212)
+        ramp_rate = VTUNE_BANDWIDTH / (VTUNE_PERIOD / 2)  # rate of change of vtune signal
+        delt_freq = 2 * ramp_rate / constants.speed_of_light
+        instantaneous_freq[num-2] = np.abs(instantaneous_freq[num-2]) / delt_freq
+        plt.plot(x_axis_time[0:len(instantaneous_freq[num-2])], instantaneous_freq[num-2], label='instantaneous frequency')
+        # label = str(avg) + ' point moving avg'
+        # plt.plot(x_axis_time[0:len(instantaneous_freq[num-2])], np.convolve(instantaneous_freq[num-2], np.ones(avg)/avg, 'same'), label=label)
+        # plt.plot(x_axis_time[0:len(instantaneous_freq[num-2])], np.convolve(instantaneous_freq[num-2], np.ones(5)/5, 'same'), label='5')
+        # plt.plot(x_axis_time[0:len(instantaneous_freq[num-2])], np.convolve(instantaneous_freq[num-2], np.ones(10)/10, 'same'), label='10')
+
+        plt.legend()
 
 
 def plot_speed_result(data, speed, ctrl):
@@ -255,15 +275,19 @@ def plot_speed_result(data, speed, ctrl):
     plt.ylabel('Speed (m/s)')
 
 
-def plot_signal_over_time(ctrl):
-    t = np.arange(0, ctrl.N_trimmed / SAMPLING_FREQUENCY, 1 / SAMPLING_FREQUENCY)
+def plot_signal_over_time(control: Signal_Processing_Control):
+    t = np.arange(0, control.N_trimmed / SAMPLING_FREQUENCY, 1 / SAMPLING_FREQUENCY)
     # plot of entire data set
-    plt.figure(ctrl.fig_num())
-    plt.plot(t, ctrl.data_set)
+    plt.figure(control.fig_num())
+    plt.plot(t, control.data_set)
     plt.title("Data Returned scaled to Voltage Applied to the ADC")
     plt.xlabel("Time (sec)")
     plt.ylabel("Amplitude (V)")
     plt.ylim([0, 3.3])
+
+
+def print_time_elapsed(prev_time):
+    print(' Time elapsed: ' + str(time.time()-prev_time))
 
 
 if __name__ == '__main__':
@@ -271,6 +295,7 @@ if __name__ == '__main__':
     N_padded = 2 ** 16  # padding used for increased resolution of fft
     run_mode = {'range': 'r', 'speed': 's', 'map': 'm'}  # dictionary of running modes
     ctrl = Signal_Processing_Control()
+    time_start = time.time()
     # parse input args, set default values if no argument given
     len_time_sec, mode_selected = parse_input_args()
     if len_time_sec <= 0:
@@ -293,19 +318,28 @@ if __name__ == '__main__':
 
             stm_serial_com.write(command)  # send command to stm32
             while time.time() < time_out:  # read data returned until timeout
-                data_return = stm_serial_com.read(2)  # read 2 bytes
-                num = (data_return[1] << 8) + (data_return[0] << 0)  # assemble two bytes into 16-bit number
-                print(num)
-                f.write(str(num))  # save num to file
-                f.write('\n')  # add delimiter to file
-                ctrl.data_set.append(num)  # append data to list of data returned
+                if stm_serial_com.in_waiting:
+                    data_return = stm_serial_com.read(2)  # read 2 bytes
+                    num = (data_return[1] << 8) + (data_return[0] << 0)  # assemble two bytes into 16-bit number
+                    print(num)
+                    f.write(str(num))  # save num to file
+                    f.write('\n')  # add delimiter to file
+                    ctrl.data_set.append(num)  # append data to list of data returned
             stm_serial_com.close()
-
         print('Output saved to ' + os.path.abspath(output_file))
     else:
         print('Loading data from: ' + load_file)
         ctrl.data_set = np.loadtxt(load_file, comments="#", delimiter="\n", unpack=False)
-
+        if ctrl.data_set.size == 0:
+            exit(0)
+    if ctrl.print_time:
+        print(f'Data acquisition complete. {len(ctrl.data_set)} samples.', end='')
+        print_time_elapsed(time_start)
+        print("First 10 samples as 12-bit num: ", end='')
+        for i in range(10):
+            print(ctrl.data_set[i] / 2**16 * 2**12, end=', ')
+        print()
+    print('Begin Processing')
     ctrl.data_set = np.array(ctrl.data_set) * (3.3 / SAMPLING_BITS)  # scale to voltage
     ctrl.data_set = trim_data(ctrl.data_set)  # trim data to last complete block size
     ctrl.N_trimmed = ctrl.data_set.size  # get number of samples kept
@@ -317,7 +351,9 @@ if __name__ == '__main__':
 
     # remove DC offset
     ctrl.data_set = ctrl.data_set-np.mean(ctrl.data_set)
-
+    if ctrl.print_time:
+        print('DC offset removed.', end='')
+        print_time_elapsed(time_start)
     if ctrl.plot_preprocessed:
         # plot of fft magnitude of entire data set vs frequency
         plt.figure(ctrl.fig_num())
@@ -328,26 +364,40 @@ if __name__ == '__main__':
         plt.title("FFT of entire data set")
         plt.ylabel("Magnitude")
         plt.xlabel("Frequency (Hz)")
+        if ctrl.print_time:
+            print('Preprocessed plots complete.', end='')
+            print_time_elapsed(time_start)
 
     # split data set into array with each row being 100 ms of samples
     data_split = np.array(np.split(ctrl.data_set, int(ctrl.N_trimmed / (SAMPLING_FREQUENCY * VTUNE_PERIOD))))
-
+    if ctrl.print_time:
+        print('Data split complete.', end='')
+        print_time_elapsed(time_start)
     # remove ensemble mean from data by removing mean from each column
     mean = data_split.mean(axis=0)
     data_split = data_split - mean
+    if ctrl.print_time:
+        print('Ensemble mean removed.', end='')
+        print_time_elapsed(time_start)
 
     # take fft of every row with zero padding
     fft_data = fft(data_split, N_padded)
+    if ctrl.print_time:
+        print('FFT of split signal complete.', end='')
+        print_time_elapsed(time_start)
     if ctrl.emd_analysis:
-        emd_data = []
-        emd_break = 0
-        for row in data_split:
-            emd_data.append(emd(row, ctrl))
-            emd_break += 1
-            if emd_break > 1:
-                break
-        if ctrl.plot_imfs and len(emd_data) > 0:
-            plot_imfs(emd_data, ctrl)
+        intrinsic_mode_functions = emd(ctrl.data_set, ctrl)
+        if ctrl.print_time:
+            print('EMD complete.', end='')
+            print_time_elapsed(time_start)
+        analytic_signal = hilbert(intrinsic_mode_functions)
+        instantaneous_phase = np.unwrap(np.angle(analytic_signal))
+        instantaneous_frequency = (np.diff(instantaneous_phase) / (2.0*np.pi) * SAMPLING_FREQUENCY)
+        if ctrl.print_time:
+            print('Instantaneous frequency calculated.', end='')
+            print_time_elapsed(time_start)
+        if ctrl.plot_imfs and len(intrinsic_mode_functions) > 0:
+            plot_imfs(intrinsic_mode_functions, instantaneous_frequency, ctrl)
 
     # # plot of fft for single 100ms row, row 20 chosen at random
     # plt.figure(ctrl.fig_num())

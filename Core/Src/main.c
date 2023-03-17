@@ -30,15 +30,20 @@
 
 /* Private typedef -----------------------------------------------------------*/
 /* USER CODE BEGIN PTD */
+typedef enum run_mode {none = 'x', range = 'r', speed = 's', idle = 'i', map = 'm'} run_mode;
+
 typedef struct Control {
 	uint16_t run_time_sec;
-	char mode_instructed;
-	char mode_running;
+	run_mode mode_instructed;
+	run_mode mode_running;
+	uint8_t transmit_data_flag;
+	uint32_t time_out;
 } control;
 /* USER CODE END PTD */
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
+
 
 
 /* USER CODE END PD */
@@ -65,7 +70,7 @@ TIM_HandleTypeDef htim1;
 TIM_HandleTypeDef htim2;
 
 /* USER CODE BEGIN PV */
-static const uint8_t DIGITAL_POT_ADDR = 0x2f; // Use 7-bit address '0101111' for digital potentiometer
+static const uint8_t DIGITAL_POT_ADDR = 0x2f << 1; // Use 7-bit address '101111' for digital potentiometer
 static uint16_t adc1_dma_buf_mixer_out[DMA_BUF_LEN];
 static int16_t data_raw_acceleration[3];
 static int16_t data_raw_angular_rate[3];
@@ -79,6 +84,8 @@ extern uint8_t UserRxBufferFS[APP_RX_DATA_SIZE]; // usb receive buffer
 extern uint8_t input_received_flag; // flag for usb input received
 // Flag to indicate when the SPI transfer is complete
 volatile uint8_t spi_complete_flag = 0;
+uint8_t VTune_first_cycle_complete;
+uint32_t IDLE = 3724; // 3Volt with 3.3V VDDA = 2.48GHz
 uint32_t CTune = 3103; /* 2.5Volt with 3.3V VDDA */
 uint32_t VTune[2484] = {
 		2482, 2483, 2484, 2485, 2486, 2487, 2488, 2489, 2490, 2491, 2492, 2493, 2494, 2495, 2496,
@@ -272,7 +279,7 @@ void process_input(const uint8_t *arr, control *pControl);
 uint8_t strcontains(const char* str1,const char* str2);
 void my_strcpy(char* cpy, const char* orig, uint8_t len);
 uint8_t isValid(const char checkChar,const char* validModes);
-void set_VCO_input_DAC(control *ctrl_ptr);
+void set_DAC_for_VCO(control *ctrl_ptr, uint8_t cycle_DAC);
 
 
 /* USER CODE END PFP */
@@ -290,16 +297,18 @@ int main(void)
 {
   /* USER CODE BEGIN 1 */
 input_received_flag = 0;
-uint8_t message2[] ="message in";
-uint8_t lsm6dslError[] ="LSM6DSL whoAmI error";
-//uint8_t
+VTune_first_cycle_complete = 0;
+// uint8_t lsm6dslError[] ="LSM6DSL whoAmI error";
+uint32_t runtime_additional_time_ms = 250;
 
 
-// initialize command struct
+// initialize command struct and set default values
 control user_input;
-user_input.mode_instructed = 'r'; // r:range, s:speed
-user_input.mode_running = 'x'; // x:none
+user_input.mode_instructed = range; // r:range, s:speed, i: idle
+user_input.mode_running = none; // x:none
 user_input.run_time_sec=0; // length of time in seconds to operate
+user_input.time_out = 3600000; // will run in range mode upon start up for 1 hour before setting VCO to idle freq
+
   /* USER CODE END 1 */
 
   /* MCU Configuration--------------------------------------------------------*/
@@ -329,12 +338,13 @@ user_input.run_time_sec=0; // length of time in seconds to operate
   MX_TIM1_Init();
   MX_I2C2_Init();
   /* USER CODE BEGIN 2 */
-  set_VCO_input_DAC(&user_input); // starts timer and sets dac output used for VCO
+  set_DAC_for_VCO(&user_input, 0); // starts timer and sets dac output used for VCO
   HAL_TIM_Base_Start(&htim1); // start timer 1 for adc1 conversion for radar mixer o/p
   HAL_TIM_OC_Start(&htim1, TIM_CHANNEL_3); // sets output compare for timer1, sets PA10 to toggle on timer1 register reload (40kHz)
-  HAL_ADC_Start_DMA(&hadc1, (uint32_t*)adc1_dma_buf_mixer_out, DMA_BUF_LEN); // start the adc with dma
 
-//  HAL_I2C_Master_Transmit(&hi2c2, DIGITAL_POT_ADDR, buf, 1, HAL_MAX_DELAY);
+  uint8_t digital_pot_buf = 0x7f; // 0x7f is full scale, 0x3f is midscale, 0 is zero scale
+  HAL_StatusTypeDef ret;
+  ret = HAL_I2C_Master_Transmit(&hi2c2, DIGITAL_POT_ADDR, &digital_pot_buf, 1, 1000);
 
   /* initialize accelerometer/gyroscope on lsm6dsl */
   stmdev_ctx_t dev_ctx;
@@ -360,16 +370,46 @@ user_input.run_time_sec=0; // length of time in seconds to operate
   /* USER CODE BEGIN WHILE */
   while (1)
   {
+	  // on command from PC, read command
 	  if (input_received_flag)
 	  {
-	 	    	process_input(&UserRxBufferFS,&user_input);
-	 	    	set_VCO_input_DAC(&user_input);
-	 	    	//perform_trial(&user_input);
-	 	        input_received_flag=0;
+		    // read command
+	 	    process_input(&UserRxBufferFS,&user_input);
+	 	    // when instructed
+	 	    // start the DAC for VCO according to command
+	 	    // start ADC for reading input/outputting to PC
+	 	    if (user_input.mode_instructed != none) {
+	 	    	if (user_input.mode_instructed == range) {
+	 	    		VTune_first_cycle_complete = 0; // clear cycle complete flag for vtune
+	 	    	}
+	 	    	set_DAC_for_VCO(&user_input, 1);  // set DAC/ADC and calculate end time of run
+	 	    	if (user_input.mode_instructed == range) { // wait for 1 VTune cycle complete
+	 	    		while (VTune_first_cycle_complete != 1) {
+	 	    			// stuck in loop until first dac_complete callback sets VTune_first _cycle_complete flag
+	 	    		}
+	 	    		HAL_Delay(2.5);
+	 	    	}
+	 	    	HAL_ADC_Start_DMA(&hadc1, (uint32_t*)adc1_dma_buf_mixer_out, DMA_BUF_LEN); // start the adc with dma
+	 	    	user_input.time_out = HAL_GetTick() + (user_input.run_time_sec * 1000) + runtime_additional_time_ms;	// HAL_GetTick returns milliseconds
+	 	 	}
+	 	        input_received_flag=0; // clear input flag
 	  }
-	  else
-	  {
-//	 	    	HAL_Delay(250);
+	  // when running, check for time elapsed of run being greater than time instructed
+	  if (user_input.mode_running != idle) {
+		  if (HAL_GetTick() > user_input.time_out) {
+			  // when run times out, set mode_instructed to i, stop the ADC and set DAC to "off mode"
+			  user_input.mode_instructed = idle;
+			  HAL_ADC_Stop_DMA(&hadc1);	// stop ADC
+	 	      set_DAC_for_VCO(&user_input, 0);  // set DAC
+		  }
+		  // digital pot does not acknowledge after address sent
+//	  uint8_t digital_pot_buf = 0x2f; // 0x7f is full scale, 0x3f is midscale, 0 is zero scale
+//
+//	  if (ret != HAL_OK) {
+//		  ret = HAL_I2C_Master_Transmit(&hi2c2, DIGITAL_POT_ADDR, &digital_pot_buf, 1, 1000);
+//		 // HAL_Delay(250);
+//	  }
+
 	  }
     /* USER CODE END WHILE */
 
@@ -920,7 +960,7 @@ void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef *hadc)
 	uint8_t len = DMA_BUF_LEN/2;
 	uint8_t halfIndex = len-1;
 //	memcpy(tx_buffer[halfIndex],adc1_dma_buf_mixer_out[halfIndex],len);
-	CDC_Transmit_FS(&adc1_dma_buf_mixer_out[len], len);
+	CDC_Transmit_FS(&adc1_dma_buf_mixer_out[halfIndex], len);
 }
 
 /**
@@ -936,6 +976,11 @@ void HAL_ADC_ConvHalfCpltCallback(ADC_HandleTypeDef *hadc)
 }
 
 
+void HAL_DAC_ConvCpltCallbackCh1(DAC_HandleTypeDef *hdac) {
+	VTune_first_cycle_complete = 1;
+}
+
+
 /*
  * process the input received over usb to extract the operating mode and the time of operation
  *
@@ -943,12 +988,9 @@ void HAL_ADC_ConvHalfCpltCallback(ADC_HandleTypeDef *hadc)
  * @param pCommand command struct to return mode and time
 */
 void process_input(const uint8_t *arr, control *pControl) {
-	uint8_t messageIn[] ="processing input";
-	uint8_t messageComplete[] ="processing complete";
-//	CDC_Transmit_FS(messageIn,sizeof(messageIn));
 	char mode[]="mode:";
     char time[] = "time:";
-    char validMode[] = {'r', 's', 'm'}; // range speed map
+    char validMode[] = {'r', 's', 'm', 'i'}; // range speed map
     char word[64] = {0};
     uint8_t i = sizeof(mode);
     uint8_t j= sizeof(time);
@@ -988,8 +1030,8 @@ void process_input(const uint8_t *arr, control *pControl) {
 			pControl->run_time_sec=(pControl->run_time_sec*10)+arr[i]-48;
 			i++;
 			}
+			pControl->transmit_data_flag=1; // set flag for transmit data
        }
-//	CDC_Transmit_FS(messageComplete,sizeof(messageComplete));
 }
 
 /*
@@ -1040,35 +1082,44 @@ uint8_t isValid(const char checkChar,const char* validModes) {
 
 
 
-void set_VCO_input_DAC(control *ctrl_ptr) {
+/*
+ * @ brief: function controls DAC output for the VCO
+ * @param ctrl_ptr: pointer to control structure
+ * @param cycle_DAC: 1 = turn off and back on the DAC for synchronization on restart during a run, 0 = cycling not required
+ * four modes of operation,
+ * 		i = idle mode, DAC sets VCO to 2.48 GHz
+ * 		r = range mode, DAC set with VTune signal
+ * 		s = speed mode, DAC sets VCO to 2.455 GHz
+ * 		m = map, DAC set with VTune signal
+ */
+void set_DAC_for_VCO(control *ctrl_ptr, uint8_t cycle_DAC) {
 	// if currently running is as instructed, return
-	if (ctrl_ptr->mode_running==ctrl_ptr->mode_instructed) {
+	if (ctrl_ptr->mode_running == ctrl_ptr->mode_instructed && cycle_DAC == 0) {
 		return;
 	}
 
-	  /* Set DAC_CH_1 to CTune or VTune based on user input for mode, defaults to range(r)*/
-	if (ctrl_ptr->mode_instructed=='r')
-	{
-		// if currently running in other mode, turn it off
-		if (ctrl_ptr->mode_running=='s') {
-			HAL_DAC_Stop(&hdac1, DAC_CHANNEL_1);
-		}
+	// if currently running in other mode, turn it off,
+	if (ctrl_ptr->mode_running == range || ctrl_ptr->mode_running == map) {
+		HAL_DAC_Stop_DMA(&hdac1, DAC_CHANNEL_1);
+		HAL_TIM_Base_Stop(&htim2);
+	} else if (ctrl_ptr->mode_running == speed || ctrl_ptr->mode_running == idle) {
+		HAL_DAC_Stop(&hdac1, DAC_CHANNEL_1);
+	}
+
+	  /* Set DAC_CH_1 to CTune VTune or IDLE based on user input for mode */
+	if (ctrl_ptr->mode_instructed == range || ctrl_ptr->mode_instructed == map) {
 		// turn on dac using dma and timer 2
 		HAL_DAC_Start_DMA(&hdac1,DAC_CHANNEL_1,(uint32_t*)VTune,2484,DAC_ALIGN_12B_R);
 		HAL_TIM_Base_Start(&htim2);
-		ctrl_ptr->mode_running='r';
-	}
-	else
-	{
-		if (ctrl_ptr->mode_running=='r') {
-			HAL_DAC_Stop_DMA(&hdac1, DAC_CHANNEL_1);
-			HAL_TIM_Base_Stop(&htim2);
-
-		}
+	} else if (ctrl_ptr->mode_instructed == speed) {
 		HAL_DAC_Start(&hdac1, DAC_CHANNEL_1);
 		HAL_DAC_SetValue(&hdac1, DAC_CHANNEL_1, DAC_ALIGN_12B_R, CTune);
-		ctrl_ptr->mode_running='s';
+
+	} else {
+		HAL_DAC_Start(&hdac1, DAC_CHANNEL_1);
+		HAL_DAC_SetValue(&hdac1, DAC_CHANNEL_1, DAC_ALIGN_12B_R, IDLE);
 	}
+	ctrl_ptr->mode_running = ctrl_ptr->mode_instructed;
 }
 
 /* USER CODE END 4 */
