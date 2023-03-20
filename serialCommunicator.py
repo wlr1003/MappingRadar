@@ -11,17 +11,18 @@ import serial
 from scipy import signal
 from scipy import constants
 from scipy import interpolate
-from scipy.signal import hilbert
+from scipy.signal import hilbert, decimate
 import numpy as np
 from numpy.fft import fft
 import matplotlib.pyplot as plt
+from matplotlib.colors import LinearSegmentedColormap
 
 ############################################
 # Set time and mode defaults
 TIME_DEFAULT = 10
 MODE_DEFAULT = 'range'
 #  turn off connection to stm32, loads file as data to process
-CONNECT_TO_STM = True
+CONNECT_TO_STM = False
 load_file = "outputCans6.txt"  # file to load to get data to process
 
 SAMPLING_FREQUENCY = 40000  # radar sampling frequency
@@ -36,14 +37,15 @@ output_file = 'output.txt'  # file name to create and save returned data
 
 class Signal_Processing_Control:
     def __init__(self):
-        self.emd_analysis = False   # turn on/off the emd analysis
+        self.print_time = True
+        self.plot_preprocessed = True   # turn on/off plot of signal received over time
+        self.filter_and_down_sample = True
+        self.emd_analysis = True   # turn on/off the emd analysis
         self.sift_stop_criteria = ['standard deviation', 0.025]  # only standard deviation implemented so far
         self.emd_stop_criteria = ['n times', 5]  # ['n times', 10] or None
-        self.plot_imfs = True   # turn on/off plots of recovered imf's
-        self.plot_preprocessed = True   # turn on/off plot of signal received over time
+        self.plot_imfs = True   # turn on/off plots of recovered imf's, only used if emd_analysis is True
         self.data_set = np.array(0)  # initialize data set to empty numpy array
         self.N_trimmed = 0      # number of samples after truncating data to be evenly divisible
-        self.print_time = True
         self._figure_num = 0    # protected variable, used to keep track of figures
 
 # returns the current figure number used during plotting
@@ -156,12 +158,27 @@ def process_as_range_data(data, control: Signal_Processing_Control):
     num_keep = get_max_freq_index(max_delt_freq)
     data = data[:, :num_keep]
     plt.figure(control.fig_num())
+    # range_data = 20 * np.log10(np.transpose(np.abs(data)))
     range_data = np.transpose(np.abs(data))
-    aspect_ratio = np.shape(data)[0] / np.shape(data)[1] * (6/5)
+    range_min = np.min(range_data)
+    range_max = np.max(range_data)
+    print(f'range min val = {range_min}, range max val = {range_max}')
+    aspect_ratio = total_time / MAX_RANGE_METERS * (5/7)
+    # colors = [(0, 0, 0), (0.8, 0, 0), (1, 1, 0)]  # first color is black, second is red, third is yellow
+    # cmap = LinearSegmentedColormap.from_list("Custom", colors, N=256)
+    # plt.imshow(range_data, origin='lower', cmap=cmap, aspect=aspect_ratio, extent=[0, total_time, 0, MAX_RANGE_METERS])
     plt.imshow(range_data, origin='lower', aspect=aspect_ratio, extent=[0, total_time, 0, MAX_RANGE_METERS])
+
     plt.title("Range of Target")
     plt.xlabel('Time (s)')
     plt.ylabel('Distance (m)')
+
+    plt.figure(control.fig_num())
+    f, t, Sxx = signal.spectrogram(ctrl.data_set, SAMPLING_FREQUENCY)
+    plt.pcolormesh(t, f, Sxx, shading='gouraud')
+    plt.ylabel('Frequency [Hz]')
+    plt.xlabel('Time [sec]')
+
 
 
 def get_max_freq_index(max_delt_freq):
@@ -256,19 +273,22 @@ def plot_imfs(imfs: np.array,instantaneous_freq: np.array,  control: Signal_Proc
         ramp_rate = VTUNE_BANDWIDTH / (VTUNE_PERIOD / 2)  # rate of change of vtune signal
         delt_freq = 2 * ramp_rate / constants.speed_of_light
         instantaneous_freq[num-2] = np.abs(instantaneous_freq[num-2]) / delt_freq
-        plt.plot(x_axis_time[0:len(instantaneous_freq[num-2])], instantaneous_freq[num-2], label='instantaneous frequency')
+        plt.plot(x_axis_time[0:len(instantaneous_freq[num-2])], instantaneous_freq[num-2])
+        plt.title("Range of Target from Instantaneous Frequency of IMF")
+        plt.xlabel('Time (s)')
+        plt.ylabel('Target Range (m)')
+        plt.ylim([0, MAX_RANGE_METERS])
         # label = str(avg) + ' point moving avg'
         # plt.plot(x_axis_time[0:len(instantaneous_freq[num-2])], np.convolve(instantaneous_freq[num-2], np.ones(avg)/avg, 'same'), label=label)
         # plt.plot(x_axis_time[0:len(instantaneous_freq[num-2])], np.convolve(instantaneous_freq[num-2], np.ones(5)/5, 'same'), label='5')
-        # plt.plot(x_axis_time[0:len(instantaneous_freq[num-2])], np.convolve(instantaneous_freq[num-2], np.ones(10)/10, 'same'), label='10')
-
-        plt.legend()
+        avg = int(SAMPLING_FREQUENCY / 50)
+        plt.plot(x_axis_time[0:len(instantaneous_freq[num-2])], np.convolve(instantaneous_freq[num-2], np.ones(avg)/avg, 'same'), label=str(avg))
 
 
 def plot_speed_result(data, speed, ctrl):
     plt.figure(ctrl.fig_num())
     range_data = np.transpose(np.abs(data))
-    aspect_ratio = np.shape(data)[0] / np.shape(data)[1] * (3 / 7)
+    aspect_ratio = total_time / speed * (5/7)
     plt.imshow(range_data, origin='lower', aspect=aspect_ratio, extent=[0, total_time, 0, speed])
     plt.title("Speed of Target")
     plt.xlabel('Time (s)')
@@ -335,10 +355,10 @@ if __name__ == '__main__':
     if ctrl.print_time:
         print(f'Data acquisition complete. {len(ctrl.data_set)} samples.', end='')
         print_time_elapsed(time_start)
-        print("First 10 samples as 12-bit num: ", end='')
-        for i in range(10):
-            print(ctrl.data_set[i] / 2**16 * 2**12, end=', ')
-        print()
+        # print("First 10 samples as 12-bit num: ", end='')
+        # for i in range(10):
+        #     print(ctrl.data_set[i] / 2**16 * 2**12, end=', ')
+        # print()
     print('Begin Processing')
     ctrl.data_set = np.array(ctrl.data_set) * (3.3 / SAMPLING_BITS)  # scale to voltage
     ctrl.data_set = trim_data(ctrl.data_set)  # trim data to last complete block size
@@ -366,6 +386,18 @@ if __name__ == '__main__':
         plt.xlabel("Frequency (Hz)")
         if ctrl.print_time:
             print('Preprocessed plots complete.', end='')
+            print_time_elapsed(time_start)
+
+    if ctrl.filter_and_down_sample:
+        down_sample_factor = 10  # set factor to down sample by, original = 40 kHz, (note, 100m range = 3.3kHz signal)
+        # decimate uses a 20*down_sample_factor order fir filter with a Hamming window for anti aliasing,
+        # filter is applied forward then backward to negate phase shift
+        ctrl.data_set = decimate(ctrl.data_set, q=down_sample_factor, ftype='fir', zero_phase=True)
+        # set variables that changed due to decimation
+        SAMPLING_FREQUENCY = SAMPLING_FREQUENCY / down_sample_factor
+        ctrl.N_trimmed = ctrl.data_set.size
+        if ctrl.print_time:
+            print(f'Down sampling by {down_sample_factor} complete.', end='')
             print_time_elapsed(time_start)
 
     # split data set into array with each row being 100 ms of samples
