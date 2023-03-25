@@ -342,7 +342,8 @@ user_input.time_out = 3600000; // will run in range mode upon start up for 1 hou
   HAL_TIM_Base_Start(&htim1); // start timer 1 for adc1 conversion for radar mixer o/p
   HAL_TIM_OC_Start(&htim1, TIM_CHANNEL_3); // sets output compare for timer1, sets PA10 to toggle on timer1 register reload (40kHz)
 
-  uint8_t digital_pot_buf = 0x7f; // 0x7f is full scale, 0x3f is midscale, 0 is zero scale
+  uint8_t digital_pot_buf = 0; // 0x7f is full scale, 0x3f is midscale, 0 is zero scale
+  uint8_t digital_pot_check = 0; // register used to read potentiometer register
   HAL_StatusTypeDef ret;
   ret = HAL_I2C_Master_Transmit(&hi2c2, DIGITAL_POT_ADDR, &digital_pot_buf, 1, 1000);
 
@@ -403,12 +404,13 @@ user_input.time_out = 3600000; // will run in range mode upon start up for 1 hou
 	 	      set_DAC_for_VCO(&user_input, 0);  // set DAC
 		  }
 		  // digital pot does not acknowledge after address sent
-//	  uint8_t digital_pot_buf = 0x2f; // 0x7f is full scale, 0x3f is midscale, 0 is zero scale
-//
-//	  if (ret != HAL_OK) {
-//		  ret = HAL_I2C_Master_Transmit(&hi2c2, DIGITAL_POT_ADDR, &digital_pot_buf, 1, 1000);
-//		 // HAL_Delay(250);
-//	  }
+	  uint8_t digital_pot_buf = 0x7f; // 0x7f is full scale, 0x3f is midscale, 0 is zero scale
+
+	  if (ret != HAL_OK) {
+		  HAL_Delay(10);
+		  ret = HAL_I2C_Master_Transmit(&hi2c2, DIGITAL_POT_ADDR, &digital_pot_buf, 1, 1000);
+		 // HAL_Delay(250);
+	  }
 
 	  }
     /* USER CODE END WHILE */
@@ -521,7 +523,7 @@ static void MX_ADC1_Init(void)
   */
   sConfig.Channel = ADC_CHANNEL_1;
   sConfig.Rank = ADC_REGULAR_RANK_1;
-  sConfig.SamplingTime = ADC_SAMPLETIME_2CYCLES_5;
+  sConfig.SamplingTime = ADC_SAMPLETIME_6CYCLES_5;
   sConfig.SingleDiff = ADC_SINGLE_ENDED;
   sConfig.OffsetNumber = ADC_OFFSET_NONE;
   sConfig.Offset = 0;

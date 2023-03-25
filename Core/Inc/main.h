@@ -67,6 +67,7 @@ void Error_Handler(void);
 #define I2C2_SCL_digital_pot_GPIO_Port GPIOA
 #define LSM6DSL_ncs_Pin GPIO_PIN_15
 #define LSM6DSL_ncs_GPIO_Port GPIOA
+
 /* USER CODE BEGIN Private defines */
 
 /* USER CODE END Private defines */

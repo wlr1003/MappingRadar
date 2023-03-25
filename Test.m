@@ -14,7 +14,7 @@ maxRange = 10 * freqRange; % maximum displayed range based on freqRange 10 meter
 %[y, Fs] = audioread('running_outside_20ms.wav');
 %data_channel = 2; % 1 for L, 2 for R (Refer to waveform in Audacity)
 
-y = readmatrix('outputPlanar.txt');
+y = readmatrix(['outputWallSixCycleLP.txt']);
 data_channel = 1; % 1 for L, 2 for R (Refer to waveform in Audacity)
 Fs = 40000;
 
@@ -29,7 +29,7 @@ timeC= data_duration * subdivid; %Time Constant for Slicing
 L = (Fs/timeC); % Length of each Slice
 
 imf = emd(y);
-y = imf(:,4);
+y = imf(:,3)+imf(:,4);
 
 y = reshape(y, L*data_duration, timeC); % Segmenting y into time-based slices
 
