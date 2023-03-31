@@ -38,6 +38,8 @@ typedef struct Control {
 	run_mode mode_running;
 	uint8_t transmit_data_flag;
 	uint32_t time_out;
+	uint8_t digital_pot_instructed;
+	uint8_t digital_pot_current_setting;
 } control;
 /* USER CODE END PTD */
 
@@ -280,7 +282,7 @@ uint8_t strcontains(const char* str1,const char* str2);
 void my_strcpy(char* cpy, const char* orig, uint8_t len);
 uint8_t isValid(const char checkChar,const char* validModes);
 void set_DAC_for_VCO(control *ctrl_ptr, uint8_t cycle_DAC);
-
+HAL_StatusTypeDef set_digital_pot(control* ctrl_ptr);
 
 /* USER CODE END PFP */
 
@@ -300,7 +302,8 @@ input_received_flag = 0;
 VTune_first_cycle_complete = 0;
 // uint8_t lsm6dslError[] ="LSM6DSL whoAmI error";
 uint32_t runtime_additional_time_ms = 250;
-
+uint8_t digital_pot_check = 255; // register used to read potentiometer register
+HAL_StatusTypeDef ret; // used for checking return values when function returns HAL status
 
 // initialize command struct and set default values
 control user_input;
@@ -308,6 +311,8 @@ user_input.mode_instructed = range; // r:range, s:speed, i: idle
 user_input.mode_running = none; // x:none
 user_input.run_time_sec=0; // length of time in seconds to operate
 user_input.time_out = 3600000; // will run in range mode upon start up for 1 hour before setting VCO to idle freq
+user_input.digital_pot_instructed = 0x3f;  // 0x7f is full scale, 0x3f is midscale, 0 is zero scale
+user_input.digital_pot_current_setting = 0x3f;  // digital pot will initialize itself to 0x3f on power up
 
   /* USER CODE END 1 */
 
@@ -342,10 +347,8 @@ user_input.time_out = 3600000; // will run in range mode upon start up for 1 hou
   HAL_TIM_Base_Start(&htim1); // start timer 1 for adc1 conversion for radar mixer o/p
   HAL_TIM_OC_Start(&htim1, TIM_CHANNEL_3); // sets output compare for timer1, sets PA10 to toggle on timer1 register reload (40kHz)
 
-  uint8_t digital_pot_buf = 0; // 0x7f is full scale, 0x3f is midscale, 0 is zero scale
-  uint8_t digital_pot_check = 0; // register used to read potentiometer register
-  HAL_StatusTypeDef ret;
-  ret = HAL_I2C_Master_Transmit(&hi2c2, DIGITAL_POT_ADDR, &digital_pot_buf, 1, 1000);
+  uint8_t digital_pot_setting = 0x3f;
+  ret = HAL_I2C_Master_Transmit(&hi2c2, DIGITAL_POT_ADDR, &digital_pot_setting,1,1000);
 
   /* initialize accelerometer/gyroscope on lsm6dsl */
   stmdev_ctx_t dev_ctx;
@@ -376,6 +379,10 @@ user_input.time_out = 3600000; // will run in range mode upon start up for 1 hou
 	  {
 		    // read command
 	 	    process_input(&UserRxBufferFS,&user_input);
+	 	    // set digital pot on command from PC
+	 	    if (user_input.digital_pot_instructed != user_input.digital_pot_current_setting) {
+	 	    	ret = set_digital_pot(&user_input);
+	 	    }
 	 	    // when instructed
 	 	    // start the DAC for VCO according to command
 	 	    // start ADC for reading input/outputting to PC
@@ -404,13 +411,13 @@ user_input.time_out = 3600000; // will run in range mode upon start up for 1 hou
 	 	      set_DAC_for_VCO(&user_input, 0);  // set DAC
 		  }
 		  // digital pot does not acknowledge after address sent
-	  uint8_t digital_pot_buf = 0x7f; // 0x7f is full scale, 0x3f is midscale, 0 is zero scale
-
-	  if (ret != HAL_OK) {
-		  HAL_Delay(10);
-		  ret = HAL_I2C_Master_Transmit(&hi2c2, DIGITAL_POT_ADDR, &digital_pot_buf, 1, 1000);
-		 // HAL_Delay(250);
-	  }
+//	  uint8_t digital_pot_buf = 0x7f; // 0x7f is full scale, 0x3f is midscale, 0 is zero scale
+//
+//	  if (ret != HAL_OK) {
+//		  HAL_Delay(10);
+//		  ret = HAL_I2C_Master_Transmit(&hi2c2, DIGITAL_POT_ADDR, &digital_pot_buf, 1, 1000);
+//		 // HAL_Delay(250);
+//	  }
 
 	  }
     /* USER CODE END WHILE */
@@ -523,7 +530,7 @@ static void MX_ADC1_Init(void)
   */
   sConfig.Channel = ADC_CHANNEL_1;
   sConfig.Rank = ADC_REGULAR_RANK_1;
-  sConfig.SamplingTime = ADC_SAMPLETIME_6CYCLES_5;
+  sConfig.SamplingTime = ADC_SAMPLETIME_2CYCLES_5;
   sConfig.SingleDiff = ADC_SINGLE_ENDED;
   sConfig.OffsetNumber = ADC_OFFSET_NONE;
   sConfig.Offset = 0;
@@ -835,7 +842,8 @@ static void MX_GPIO_Init(void)
   __HAL_RCC_GPIOB_CLK_ENABLE();
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(GPIOB, GPIO_PIN_11, GPIO_PIN_SET);
+  HAL_GPIO_WritePin(GPIOB, LED1_Pin|LED2_Pin|LED3_Pin|LED4_Pin
+                          |LED5_Pin, GPIO_PIN_RESET);
 
   /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(LSM6DSL_ncs_GPIO_Port, LSM6DSL_ncs_Pin, GPIO_PIN_RESET);
@@ -846,8 +854,10 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
 
-  /*Configure GPIO pin : PB11 */
-  GPIO_InitStruct.Pin = GPIO_PIN_11;
+  /*Configure GPIO pins : LED1_Pin LED2_Pin LED3_Pin LED4_Pin
+                           LED5_Pin */
+  GPIO_InitStruct.Pin = LED1_Pin|LED2_Pin|LED3_Pin|LED4_Pin
+                          |LED5_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
@@ -992,10 +1002,12 @@ void HAL_DAC_ConvCpltCallbackCh1(DAC_HandleTypeDef *hdac) {
 void process_input(const uint8_t *arr, control *pControl) {
 	char mode[]="mode:";
     char time[] = "time:";
+    char pot[] = "pot:";
     char validMode[] = {'r', 's', 'm', 'i'}; // range speed map
     char word[64] = {0};
     uint8_t i = sizeof(mode);
     uint8_t j= sizeof(time);
+    uint8_t k = sizeof(pot);
     // check input to ensure "mode:" is received
     my_strcpy(word, arr, i);
     if (strcontains(word,mode)) {
@@ -1015,7 +1027,7 @@ void process_input(const uint8_t *arr, control *pControl) {
     }
     // check input to ensure "time:" is received
     my_strcpy(word, &arr[i], j);
-    	if (strcontains(word,time)) {//mode:r\ntime:10
+    	if (strcontains(word,time)) {//mode:r\ntime:10\npot:63
     	   // set i to index one past command for time
 			i=i+j-1;
 			j=i+1;
@@ -1032,8 +1044,32 @@ void process_input(const uint8_t *arr, control *pControl) {
 			pControl->run_time_sec=(pControl->run_time_sec*10)+arr[i]-48;
 			i++;
 			}
-			pControl->transmit_data_flag=1; // set flag for transmit data
-       }
+      }
+      // move index past command for mode and then '\n'
+      while(arr[i]=='\n') {
+    	    i++;
+      }
+	// check input to ensure "pot:" is received
+	my_strcpy(word, &arr[i], k);
+		if (strcontains(word,pot)) {//mode:r\ntime:10\npot:63
+		   // set i to index one past command for time
+			i=i+k-1;
+			j=i+1;
+			// get index of last digit
+			while (arr[j]!='\n'&& arr[j]!='\0') {
+			j++;
+			}
+			// set digital pot setting to zero
+			pControl->digital_pot_instructed = 0;
+			// add each digits value,
+			// *10 to shift current value left one digit for adding next digit
+			// -48 converts from ascii to int
+			while (i < j) {
+			pControl->digital_pot_instructed = (pControl->digital_pot_instructed*10)+arr[i]-48;
+			i++;
+			}
+	  }
+	  pControl->transmit_data_flag=1; // set flag for transmit data
 }
 
 /*
@@ -1123,6 +1159,32 @@ void set_DAC_for_VCO(control *ctrl_ptr, uint8_t cycle_DAC) {
 	}
 	ctrl_ptr->mode_running = ctrl_ptr->mode_instructed;
 }
+
+
+/*
+ * set the digital pot using i2c
+ * function will set LED1 on initial fail and LED2 on secondary fail
+ * @param ctrl_ptr: pointer to control structure
+ * @return: HAL status of i2c communication
+ */
+HAL_StatusTypeDef set_digital_pot(control* ctrl_ptr) {
+	HAL_StatusTypeDef ret = HAL_I2C_Master_Transmit(&hi2c2, DIGITAL_POT_ADDR, &ctrl_ptr->digital_pot_instructed, 1, 1000);
+	if (ret != HAL_OK) {
+		HAL_GPIO_WritePin(LED1_GPIO_Port, LED1_Pin, SET);
+		uint8_t software_reset = 0xFF;
+		HAL_I2C_Master_Transmit(&hi2c2,software_reset , &software_reset, 1, 100);
+		ret = HAL_I2C_Master_Transmit(&hi2c2, DIGITAL_POT_ADDR, &ctrl_ptr->digital_pot_instructed, 1, 1000);
+		if (ret != HAL_OK) {
+			HAL_GPIO_WritePin(LED2_GPIO_Port, LED2_Pin, SET);
+		} else {
+			ctrl_ptr->digital_pot_current_setting = ctrl_ptr->digital_pot_instructed;
+		}
+	} else {
+		ctrl_ptr->digital_pot_current_setting = ctrl_ptr->digital_pot_instructed;
+	}
+	return ret;
+}
+
 
 /* USER CODE END 4 */
 

@@ -21,26 +21,32 @@ from matplotlib.colors import LinearSegmentedColormap
 # Set time and mode defaults
 TIME_DEFAULT = 10
 MODE_DEFAULT = 'range'
-#  turn off connection to stm32, loads file as data to process
-CONNECT_TO_STM = False
-load_file = "outputCans6.txt"  # file to load to get data to process
+DIGITAL_POT_DEFAULT = 0x40  # default value to send to stm32
 
+#  turn off connection to stm32, loads file as data to process
+CONNECT_TO_STM = True
+output_file = 'output/delete.txt'  # file name to create and save returned data
+load_file = "output/outputrangelab.txt"  # file to load to get data to process
+############################################
+
+# radar parameters
+MAX_RANGE_METERS = 10  # max range will alter the max range that will be plotted
+MAX_SPEED_KMH = 200  # 200kmh ~ 124mph
 SAMPLING_FREQUENCY = 40000  # radar sampling frequency
-SAMPLING_BITS = 2 ** 16  # 16 bit samples
+SAMPLING_BITS = 2 ** 16  # 16 bit samples from ADC
 CTUNE_FREQUENCY = 2455650000  # 2.45 GHz measured on spectrum analyzer
 VTUNE_BANDWIDTH = 100000000  # Bandwidth of vtune signal from VCO
 VTUNE_PERIOD = 0.04  # period of vtune set by DAC output in s
-MAX_RANGE_METERS = 10
-MAX_SPEED_KMH = 200  # 200kmh ~ 124mph
-output_file = 'output.txt'  # file name to create and save returned data
 
 
 class Signal_Processing_Control:
     def __init__(self):
         self.print_time = True
         self.plot_preprocessed = True   # turn on/off plot of signal received over time
+        self.notch_filter = False  # i dont think this works. needs further testing
         self.filter_and_down_sample = True
-        self.emd_analysis = True   # turn on/off the emd analysis
+        self.ensemble_mean = True
+        self.emd_analysis = False   # turn on/off the emd analysis
         self.sift_stop_criteria = ['standard deviation', 0.025]  # only standard deviation implemented so far
         self.emd_stop_criteria = ['n times', 5]  # ['n times', 10] or None
         self.plot_imfs = True   # turn on/off plots of recovered imf's, only used if emd_analysis is True
@@ -96,17 +102,20 @@ def print_usage():
     print('Options:')
     print('  -time, -t        Time for recording data from radar.\n'
           '  -mode, -m        Mode to set prior to recording data.\n'
-          '  -help, -h        Print usage to console.')
+          '  -help, -h        Print usage to console.\n'
+          '  -pot,  -p        Digital potentiometer gain setting.')
     print('Value:')
     print('  -time, -t        Integer in seconds.\n'
-          '  -mode, -m        Available modes: (r)ange, (s)peed.')
+          '  -mode, -m        Available modes: (r)ange, (s)peed.\n'
+          '  -pot,  -p         Integer or Hex value in range (0,127) or (0x0,0x7f).')
 
 
 # parse all input arguments
-# sets parameters passed as arguements or default
+# sets parameters passed as arguments or default
 def parse_input_args():
     len_time = 0
-    mode_select = ''
+    mode_select = None
+    digital_pot = None
     num_args = len(sys.argv)
     if num_args > 1:
         for i in range(int((num_args - 1) / 2 + ((num_args - 1) % 2))):  # for each arg pair
@@ -135,10 +144,24 @@ def parse_input_args():
                         print('Invalid mode: mode can be range or r, speed or s.')
                         print_usage()
                         exit(3)
+            elif flag == 'p' or flag == 'pot':
+                digital_pot = int(sys.argv[(i * 2) + 2], 0)
+                if digital_pot < 0 or digital_pot > 127:
+                    print('Invalid pot setting: digital pot must be set in range of 0 to 127. \n'
+                          'Setting may be given as integer or as hex value, denote hex values with prefix 0x.')
+                    print_usage()
+                    exit(4)
             elif flag == 'h' or flag == 'help':
                 print_usage()
                 exit(0)
-    return len_time, mode_select
+    # if any arg not set, set to default
+    if len_time <= 0:
+        len_time = TIME_DEFAULT
+    if mode_select is None:
+        mode_select = MODE_DEFAULT
+    if digital_pot is None:
+        digital_pot = DIGITAL_POT_DEFAULT
+    return len_time, mode_select, digital_pot
 
 
 def process_as_speed_data(data, speed):
@@ -160,9 +183,9 @@ def process_as_range_data(data, control: Signal_Processing_Control):
     plt.figure(control.fig_num())
     # range_data = 20 * np.log10(np.transpose(np.abs(data)))
     range_data = np.transpose(np.abs(data))
-    range_min = np.min(range_data)
-    range_max = np.max(range_data)
-    print(f'range min val = {range_min}, range max val = {range_max}')
+    # range_min = np.min(range_data)
+    # range_max = np.max(range_data)
+    # print(f'range min val = {range_min}, range max val = {range_max}')
     aspect_ratio = total_time / MAX_RANGE_METERS * (5/7)
     # colors = [(0, 0, 0), (0.8, 0, 0), (1, 1, 0)]  # first color is black, second is red, third is yellow
     # cmap = LinearSegmentedColormap.from_list("Custom", colors, N=256)
@@ -176,9 +199,9 @@ def process_as_range_data(data, control: Signal_Processing_Control):
     plt.figure(control.fig_num())
     f, t, Sxx = signal.spectrogram(ctrl.data_set, SAMPLING_FREQUENCY)
     plt.pcolormesh(t, f, Sxx, shading='gouraud')
+    plt.title('Spectrogram')
     plt.ylabel('Frequency [Hz]')
     plt.xlabel('Time [sec]')
-
 
 
 def get_max_freq_index(max_delt_freq):
@@ -317,14 +340,12 @@ if __name__ == '__main__':
     ctrl = Signal_Processing_Control()
     time_start = time.time()
     # parse input args, set default values if no argument given
-    len_time_sec, mode_selected = parse_input_args()
-    if len_time_sec <= 0:
-        len_time_sec = TIME_DEFAULT  # time in seconds for measurement
-    if mode_selected == '':
-        mode_selected = MODE_DEFAULT
+    len_time_sec, mode_selected, digital_pot_setting = parse_input_args()
 
-    command = str('mode:' + run_mode.get(mode_selected) + '\n' + 'time:' + str(len_time_sec) + '\n').encode(
-        encoding="utf-8")  # assemble  and encode command to send to stm32
+    # assemble and encode command to send to stm32
+    command = str('mode:' + run_mode.get(mode_selected) + '\n' +
+                  'time:' + str(len_time_sec) + '\n' +
+                  'pot:' + str(digital_pot_setting) + '\n').encode(encoding="utf-8")
 
     if CONNECT_TO_STM:
         with open(output_file, 'w') as f:
@@ -388,6 +409,11 @@ if __name__ == '__main__':
             print('Preprocessed plots complete.', end='')
             print_time_elapsed(time_start)
 
+    if ctrl.notch_filter:
+        num=[1,-1.9999,1]
+        den=[1,-1.9999,0.9999]
+        ctrl.data_set = signal.filtfilt(num,den,ctrl.data_set)
+
     if ctrl.filter_and_down_sample:
         down_sample_factor = 10  # set factor to down sample by, original = 40 kHz, (note, 100m range = 3.3kHz signal)
         # decimate uses a 20*down_sample_factor order fir filter with a Hamming window for anti aliasing,
@@ -405,12 +431,13 @@ if __name__ == '__main__':
     if ctrl.print_time:
         print('Data split complete.', end='')
         print_time_elapsed(time_start)
-    # remove ensemble mean from data by removing mean from each column
-    mean = data_split.mean(axis=0)
-    data_split = data_split - mean
-    if ctrl.print_time:
-        print('Ensemble mean removed.', end='')
-        print_time_elapsed(time_start)
+    if ctrl.ensemble_mean:
+        # remove ensemble mean from data by removing mean from each column
+        mean = data_split.mean(axis=0)
+        data_split = data_split - mean
+        if ctrl.print_time:
+            print('Ensemble mean removed.', end='')
+            print_time_elapsed(time_start)
 
     # take fft of every row with zero padding
     fft_data = fft(data_split, N_padded)

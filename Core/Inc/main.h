@@ -61,10 +61,22 @@ void Error_Handler(void);
 /* Private defines -----------------------------------------------------------*/
 #define mixer_op_filtered_Pin GPIO_PIN_0
 #define mixer_op_filtered_GPIO_Port GPIOA
+#define LED1_Pin GPIO_PIN_11
+#define LED1_GPIO_Port GPIOB
+#define LED2_Pin GPIO_PIN_12
+#define LED2_GPIO_Port GPIOB
+#define LED3_Pin GPIO_PIN_13
+#define LED3_GPIO_Port GPIOB
+#define LED4_Pin GPIO_PIN_14
+#define LED4_GPIO_Port GPIOB
+#define LED5_Pin GPIO_PIN_15
+#define LED5_GPIO_Port GPIOB
 #define I2C2_SDA_digital_pot_Pin GPIO_PIN_8
 #define I2C2_SDA_digital_pot_GPIO_Port GPIOA
 #define I2C2_SCL_digital_pot_Pin GPIO_PIN_9
 #define I2C2_SCL_digital_pot_GPIO_Port GPIOA
+#define TIM1_CH3_LED_Pin GPIO_PIN_10
+#define TIM1_CH3_LED_GPIO_Port GPIOA
 #define LSM6DSL_ncs_Pin GPIO_PIN_15
 #define LSM6DSL_ncs_GPIO_Port GPIOA
 
