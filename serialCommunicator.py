@@ -19,23 +19,41 @@ from matplotlib.colors import LinearSegmentedColormap
 
 ############################################
 # Set time and mode defaults
-TIME_DEFAULT = 1
+TIME_DEFAULT = 30
 MODE_DEFAULT = 'range'
-DIGITAL_POT_DEFAULT = 0x40  # default value to send to stm32
+DIGITAL_POT_DEFAULT = 0x0  # default value to send to stm32
 
 #  turn off connection to stm32, loads file as data to process
-CONNECT_TO_STM = True
+CONNECT_TO_STM = False
 output_file = 'output/delete.txt'  # file name to create and save returned data
-load_file = "output/delete.txt"  # file to load to get data to process
+load_file = "output/rangecookiesheet10.txt"  # file to load to get data to process
 ############################################
-
+#  pot = 3f
+#  yagi
+# cookie 1 stationary
+# cookie 2 walking away, grab cookie, come back
+# cookie 3 holding cookie sheet, walk away and back
+# planar
+# cookie 4 walk away, run to
+# cans
+# cookie 5 walk away walk back
+#  max pot
+# cookie 6 max pot, walk away walk back
+# yagi
+#  cookie 7 walk away walk back
+# cookie 8 walk away whole time
+# speed 9 ran away, run back
+#  range 10 walk away whole time
+# 11 amp moved to receive
+#  12 car driving toward
+#  pot set to zero
 # radar parameters
-MAX_RANGE_METERS = 10  # max range will alter the max range that will be plotted
+MAX_RANGE_METERS = 50  # max range will alter the max range that will be plotted
 MAX_SPEED_KMH = 200  # 200kmh ~ 124mph
 SAMPLING_FREQUENCY = 40000  # radar sampling frequency
 SAMPLING_BITS = 2 ** 16  # 16 bit samples from ADC
 CTUNE_FREQUENCY = 2455650000  # 2.45 GHz measured on spectrum analyzer
-VTUNE_BANDWIDTH = 100000000  # Bandwidth of vtune signal from VCO
+VTUNE_BANDWIDTH = 80000000  # Bandwidth of vtune signal from VCO
 VTUNE_PERIOD = 1/25  # period of vtune set by DAC output in s
 
 
@@ -45,8 +63,9 @@ class Signal_Processing_Control:
         self.plot_preprocessed = True   # turn on/off plot of signal received over time
         self.plot_during_processing = True
         self.notch_filter = False  # i dont think this works. needs further testing
-        self.filter_and_down_sample = False
+        self.filter_and_down_sample = True
         self.ensemble_mean = True
+        self.scale_for_range_loss = True
         self.emd_analysis = False   # turn on/off the emd analysis
         self.sift_stop_criteria = ['standard deviation', 0.025]  # only standard deviation implemented so far
         self.emd_stop_criteria = ['n times', 5]  # ['n times', 10] or None
@@ -70,7 +89,7 @@ def init_serial_connection():
         if platform == "win32":
             serial_obj = serial.Serial('COM5')  # COMx format for Windows
         else:
-            serial_obj = serial.Serial('/dev/ttyACM1')  # ttyACMx format on Linux
+            serial_obj = serial.Serial('/dev/ttyACM0')  # ttyACMx format on Linux
     except serial.serialutil.SerialException as error:
         print(error)
         print('exiting')
@@ -180,19 +199,27 @@ def process_as_range_data(data, control: Signal_Processing_Control):
     # range=(c*f_m)/(2*ramp_rate)  rearranged to solve for fm: fm_max=range_max*(2*ramp_rate/c)
     max_delt_freq = MAX_RANGE_METERS * 2 * ramp_rate / constants.speed_of_light
     num_keep = get_max_freq_index(max_delt_freq)
-    data = data[:, :num_keep]
+    aspect_ratio = total_time / MAX_RANGE_METERS * (5/7)
+    data = np.abs(data[:, :num_keep])
+    if ctrl.scale_for_range_loss:
+        range_scale = np.arange(start=0, stop=MAX_RANGE_METERS, step=MAX_RANGE_METERS/num_keep)**(3/2)
+        data_scaled = np.transpose(data[:]*range_scale)
+        plt.figure(control.fig_num())
+        plt.imshow(data_scaled, origin='lower', aspect=aspect_ratio, extent=[0, total_time, 0, MAX_RANGE_METERS])
+        plt.title("Range of Target with Returns Scaled for Range Loss")
+        plt.xlabel('Time (s)')
+        plt.ylabel('Distance (m)')
     plt.figure(control.fig_num())
     # range_data = 20 * np.log10(np.transpose(np.abs(data)))
-    range_data = np.transpose(np.abs(data))
+    range_data = np.transpose(data)
+
     # range_min = np.min(range_data)
     # range_max = np.max(range_data)
     # print(f'range min val = {range_min}, range max val = {range_max}')
-    aspect_ratio = total_time / MAX_RANGE_METERS * (5/7)
     # colors = [(0, 0, 0), (0.8, 0, 0), (1, 1, 0)]  # first color is black, second is red, third is yellow
     # cmap = LinearSegmentedColormap.from_list("Custom", colors, N=256)
     # plt.imshow(range_data, origin='lower', cmap=cmap, aspect=aspect_ratio, extent=[0, total_time, 0, MAX_RANGE_METERS])
     plt.imshow(range_data, origin='lower', aspect=aspect_ratio, extent=[0, total_time, 0, MAX_RANGE_METERS])
-
     plt.title("Range of Target")
     plt.xlabel('Time (s)')
     plt.ylabel('Distance (m)')
@@ -323,7 +350,7 @@ def plot_signal_over_time(control: Signal_Processing_Control):
     t = np.arange(0, control.N_trimmed / SAMPLING_FREQUENCY, 1 / SAMPLING_FREQUENCY)
     # plot of entire data set
     plt.figure(control.fig_num())
-    plt.plot(t, control.data_set, '.')
+    plt.plot(t, control.data_set)
     plt.title("Data Returned scaled to Voltage Applied to the ADC")
     plt.xlabel("Time (sec)")
     plt.ylabel("Amplitude (V)")
