@@ -19,14 +19,14 @@ from matplotlib.colors import LinearSegmentedColormap
 
 ############################################
 # Set time and mode defaults
-TIME_DEFAULT = 10
+TIME_DEFAULT = 1
 MODE_DEFAULT = 'range'
 DIGITAL_POT_DEFAULT = 0x40  # default value to send to stm32
 
 #  turn off connection to stm32, loads file as data to process
 CONNECT_TO_STM = True
 output_file = 'output/delete.txt'  # file name to create and save returned data
-load_file = "output/outputrangelab.txt"  # file to load to get data to process
+load_file = "output/delete.txt"  # file to load to get data to process
 ############################################
 
 # radar parameters
@@ -36,15 +36,16 @@ SAMPLING_FREQUENCY = 40000  # radar sampling frequency
 SAMPLING_BITS = 2 ** 16  # 16 bit samples from ADC
 CTUNE_FREQUENCY = 2455650000  # 2.45 GHz measured on spectrum analyzer
 VTUNE_BANDWIDTH = 100000000  # Bandwidth of vtune signal from VCO
-VTUNE_PERIOD = 0.04  # period of vtune set by DAC output in s
+VTUNE_PERIOD = 1/25  # period of vtune set by DAC output in s
 
 
 class Signal_Processing_Control:
     def __init__(self):
         self.print_time = True
         self.plot_preprocessed = True   # turn on/off plot of signal received over time
+        self.plot_during_processing = True
         self.notch_filter = False  # i dont think this works. needs further testing
-        self.filter_and_down_sample = True
+        self.filter_and_down_sample = False
         self.ensemble_mean = True
         self.emd_analysis = False   # turn on/off the emd analysis
         self.sift_stop_criteria = ['standard deviation', 0.025]  # only standard deviation implemented so far
@@ -322,7 +323,7 @@ def plot_signal_over_time(control: Signal_Processing_Control):
     t = np.arange(0, control.N_trimmed / SAMPLING_FREQUENCY, 1 / SAMPLING_FREQUENCY)
     # plot of entire data set
     plt.figure(control.fig_num())
-    plt.plot(t, control.data_set)
+    plt.plot(t, control.data_set, '.')
     plt.title("Data Returned scaled to Voltage Applied to the ADC")
     plt.xlabel("Time (sec)")
     plt.ylabel("Amplitude (V)")
@@ -429,12 +430,33 @@ if __name__ == '__main__':
     # split data set into array with each row being 100 ms of samples
     data_split = np.array(np.split(ctrl.data_set, int(ctrl.N_trimmed / (SAMPLING_FREQUENCY * VTUNE_PERIOD))))
     if ctrl.print_time:
-        print('Data split complete.', end='')
+        print(f'Data split complete. {len(data_split[0])} samples per segment. ', end='')
         print_time_elapsed(time_start)
     if ctrl.ensemble_mean:
+        if ctrl.plot_during_processing:
+            plt.figure(ctrl.fig_num())
+            plt.plot(data_split[0])
+            plt.title('first sample before ensemble mean removal')
+            plt.figure(ctrl.fig_num())
+            plt.plot(data_split[9])
+            plt.title('tenth sample before ensemble mean removal')
+            plt.figure(ctrl.fig_num())
+            plt.plot(data_split[-1])
+            plt.title('last sample before ensemble mean removal')
         # remove ensemble mean from data by removing mean from each column
         mean = data_split.mean(axis=0)
         data_split = data_split - mean
+        if ctrl.plot_during_processing:
+            plt.figure(ctrl.fig_num())
+            plt.plot(data_split[0])
+            plt.title('first sample after ensemble mean removal')
+            plt.figure(ctrl.fig_num())
+            plt.plot(data_split[9])
+            plt.title('tenth sample after ensemble mean removal')
+            plt.figure(ctrl.fig_num())
+            plt.plot(data_split[-1])
+            plt.title('last sample after ensemble mean removal')
+
         if ctrl.print_time:
             print('Ensemble mean removed.', end='')
             print_time_elapsed(time_start)
