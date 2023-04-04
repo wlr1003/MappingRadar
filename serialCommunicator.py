@@ -26,7 +26,7 @@ DIGITAL_POT_DEFAULT = 0x0  # default value to send to stm32
 #  turn off connection to stm32, loads file as data to process
 CONNECT_TO_STM = False
 output_file = 'output/delete.txt'  # file name to create and save returned data
-load_file = "output/rangecookiesheet10.txt"  # file to load to get data to process
+load_file = "output/rangecookiesheet5.txt"  # file to load to get data to process
 ############################################
 #  pot = 3f
 #  yagi
@@ -47,9 +47,10 @@ load_file = "output/rangecookiesheet10.txt"  # file to load to get data to proce
 # 11 amp moved to receive
 #  12 car driving toward
 #  pot set to zero
+
 # radar parameters
 MAX_RANGE_METERS = 50  # max range will alter the max range that will be plotted
-MAX_SPEED_KMH = 200  # 200kmh ~ 124mph
+MAX_SPEED_KMH = 50  # 200kmh ~ 124mph
 SAMPLING_FREQUENCY = 40000  # radar sampling frequency
 SAMPLING_BITS = 2 ** 16  # 16 bit samples from ADC
 CTUNE_FREQUENCY = 2455650000  # 2.45 GHz measured on spectrum analyzer
@@ -60,12 +61,14 @@ VTUNE_PERIOD = 1/25  # period of vtune set by DAC output in s
 class Signal_Processing_Control:
     def __init__(self):
         self.print_time = True
-        self.plot_preprocessed = True   # turn on/off plot of signal received over time
-        self.plot_during_processing = True
+        self.plot_preprocessed = False   # turn on/off plot of signal received over time
+        self.plot_during_processing = False
+        self.plot_ranging_fft_at_5_sec = True
         self.notch_filter = False  # i dont think this works. needs further testing
         self.filter_and_down_sample = True
         self.ensemble_mean = True
         self.scale_for_range_loss = True
+        self.two_pulse_canceller = True
         self.emd_analysis = False   # turn on/off the emd analysis
         self.sift_stop_criteria = ['standard deviation', 0.025]  # only standard deviation implemented so far
         self.emd_stop_criteria = ['n times', 5]  # ['n times', 10] or None
@@ -185,7 +188,7 @@ def parse_input_args():
 
 
 def process_as_speed_data(data, speed):
-    max_delt_freq = speed / constants.speed_of_light * CTUNE_FREQUENCY  # del_f = (Ve/c)*fc
+    max_delt_freq = 2 * speed / constants.speed_of_light * CTUNE_FREQUENCY  # del_f = (Ve/c)*fc
     # keep fft data proportional to MAX_SPEED
     num_keep = get_max_freq_index(max_delt_freq)
     data = data[:, :num_keep]
@@ -193,19 +196,31 @@ def process_as_speed_data(data, speed):
 
 
 def process_as_range_data(data, control: Signal_Processing_Control):
+    if ctrl.plot_ranging_fft_at_5_sec:
+        plt.figure(control.fig_num())
+        range_scale = np.arange(start=0, stop=MAX_RANGE_METERS, step=MAX_RANGE_METERS/len(data[0]))**(2.4/2)
+        single_block = 20*np.log10(offset_zeros(np.abs(data[25*5])*range_scale))
+        single_block = single_block[35:int(len(single_block)/2)]
+        single_block -= np.max(single_block)
+        plt.plot(single_block)
+        print('fft mean = ' + str(np.mean(single_block)))
     # assume all targets are stationary,
     # data is mixer signal which is difference between current transmit and time delayed return signals
     ramp_rate = VTUNE_BANDWIDTH / (VTUNE_PERIOD / 2)  # rate of change of vtune signal
     # range=(c*f_m)/(2*ramp_rate)  rearranged to solve for fm: fm_max=range_max*(2*ramp_rate/c)
     max_delt_freq = MAX_RANGE_METERS * 2 * ramp_rate / constants.speed_of_light
+    # print(max_delt_freq)
     num_keep = get_max_freq_index(max_delt_freq)
     aspect_ratio = total_time / MAX_RANGE_METERS * (5/7)
     data = np.abs(data[:, :num_keep])
+
     if ctrl.scale_for_range_loss:
-        range_scale = np.arange(start=0, stop=MAX_RANGE_METERS, step=MAX_RANGE_METERS/num_keep)**(3/2)
+        range_scale = np.arange(start=0, stop=MAX_RANGE_METERS, step=MAX_RANGE_METERS/num_keep)**(2.4/2)
         data_scaled = np.transpose(data[:]*range_scale)
+        data_scaled = 20 * np.log10(offset_zeros(data_scaled))
+        data_scaled -= data_scaled.min()
         plt.figure(control.fig_num())
-        plt.imshow(data_scaled, origin='lower', aspect=aspect_ratio, extent=[0, total_time, 0, MAX_RANGE_METERS])
+        plt.imshow(data_scaled, origin='lower', aspect=aspect_ratio, extent=[0, total_time, 0, MAX_RANGE_METERS], vmin=np.mean(data_scaled))
         plt.title("Range of Target with Returns Scaled for Range Loss")
         plt.xlabel('Time (s)')
         plt.ylabel('Distance (m)')
@@ -224,17 +239,28 @@ def process_as_range_data(data, control: Signal_Processing_Control):
     plt.xlabel('Time (s)')
     plt.ylabel('Distance (m)')
 
-    plt.figure(control.fig_num())
-    f, t, Sxx = signal.spectrogram(ctrl.data_set, SAMPLING_FREQUENCY)
-    plt.pcolormesh(t, f, Sxx, shading='gouraud')
-    plt.title('Spectrogram')
-    plt.ylabel('Frequency [Hz]')
-    plt.xlabel('Time [sec]')
+    # plt.figure(control.fig_num())
+    # f, t, Sxx = signal.spectrogram(ctrl.data_set, SAMPLING_FREQUENCY)
+    # plt.pcolormesh(t, f, Sxx, shading='gouraud')
+    # plt.title('Spectrogram')
+    # plt.ylabel('Frequency [Hz]')
+    # plt.xlabel('Time [sec]')
 
 
 def get_max_freq_index(max_delt_freq):
     num_keep = int(N_padded / SAMPLING_FREQUENCY * max_delt_freq)
     return num_keep
+
+
+def offset_zeros(data):
+    if len(data.shape) > 1:
+        for x in data:
+            offset_zeros(x)
+        return data
+    for n in range(data.shape[0]):
+        if data[n] == 0:
+            data[n] += 0.0001
+    return data
 
 
 def emd(data_1d: np.ndarray, ctrl: Signal_Processing_Control):
@@ -363,7 +389,7 @@ def print_time_elapsed(prev_time):
 
 if __name__ == '__main__':
     delay_time_sec = 0.5  # delay added to ensure all samples transferred
-    N_padded = 2 ** 16  # padding used for increased resolution of fft
+    N_padded = 2 ** 14  # padding used for increased resolution of fft
     run_mode = {'range': 'r', 'speed': 's', 'map': 'm'}  # dictionary of running modes
     ctrl = Signal_Processing_Control()
     time_start = time.time()
@@ -404,10 +430,7 @@ if __name__ == '__main__':
     if ctrl.print_time:
         print(f'Data acquisition complete. {len(ctrl.data_set)} samples.', end='')
         print_time_elapsed(time_start)
-        # print("First 10 samples as 12-bit num: ", end='')
-        # for i in range(10):
-        #     print(ctrl.data_set[i] / 2**16 * 2**12, end=', ')
-        # print()
+
     print('Begin Processing')
     ctrl.data_set = np.array(ctrl.data_set) * (3.3 / SAMPLING_BITS)  # scale to voltage
     ctrl.data_set = trim_data(ctrl.data_set)  # trim data to last complete block size
@@ -443,7 +466,7 @@ if __name__ == '__main__':
         ctrl.data_set = signal.filtfilt(num,den,ctrl.data_set)
 
     if ctrl.filter_and_down_sample:
-        down_sample_factor = 10  # set factor to down sample by, original = 40 kHz, (note, 100m range = 3.3kHz signal)
+        down_sample_factor = 5  # set factor to down sample by, original = 40 kHz, (note, 100m range = 3.3kHz signal)
         # decimate uses a 20*down_sample_factor order fir filter with a Hamming window for anti aliasing,
         # filter is applied forward then backward to negate phase shift
         ctrl.data_set = decimate(ctrl.data_set, q=down_sample_factor, ftype='fir', zero_phase=True)
@@ -454,7 +477,7 @@ if __name__ == '__main__':
             print(f'Down sampling by {down_sample_factor} complete.', end='')
             print_time_elapsed(time_start)
 
-    # split data set into array with each row being 100 ms of samples
+    # split data set into array with each row being 40 ms of samples
     data_split = np.array(np.split(ctrl.data_set, int(ctrl.N_trimmed / (SAMPLING_FREQUENCY * VTUNE_PERIOD))))
     if ctrl.print_time:
         print(f'Data split complete. {len(data_split[0])} samples per segment. ', end='')
@@ -483,15 +506,19 @@ if __name__ == '__main__':
             plt.figure(ctrl.fig_num())
             plt.plot(data_split[-1])
             plt.title('last sample after ensemble mean removal')
-
         if ctrl.print_time:
             print('Ensemble mean removed.', end='')
             print_time_elapsed(time_start)
 
+    if ctrl.two_pulse_canceller and MODE_DEFAULT == 'range':
+        data_split = data_split[2:] - data_split[1:-1]
+        if ctrl.print_time:
+            print('Two pulse cancellation complete.', end='')
+            print_time_elapsed(time_start)
     # take fft of every row with zero padding
     fft_data = fft(data_split, N_padded)
     if ctrl.print_time:
-        print('FFT of split signal complete.', end='')
+        print('FFT of signal complete.', end='')
         print_time_elapsed(time_start)
     if ctrl.emd_analysis:
         intrinsic_mode_functions = emd(ctrl.data_set, ctrl)
@@ -507,17 +534,6 @@ if __name__ == '__main__':
         if ctrl.plot_imfs and len(intrinsic_mode_functions) > 0:
             plot_imfs(intrinsic_mode_functions, instantaneous_frequency, ctrl)
 
-    # # plot of fft for single 100ms row, row 20 chosen at random
-    # plt.figure(ctrl.fig_num())
-    # # set f to 0 to sampling frequency for x-axis
-    # f = np.array([i * SAMPLING_FREQUENCY / (N_padded - 1) for i in range(N_padded)])
-    # # prevent errors if fft data has less than 2 seconds of data, take row 20 or last
-    # slice_num = min(20, np.shape(fft_data)[0])
-    # plt.plot(f, np.abs(fft_data[slice_num]))
-    # plt.title("FFT of time slice " + str(slice_num))
-    # plt.ylabel("Magnitude")
-    # plt.xlabel("Frequency (Hz)")
-
     if mode_selected == 'speed':
         speed_m_s = MAX_SPEED_KMH * 1000 / (60 * 60)  # convert km/h to m/s
         fft_data = process_as_speed_data(fft_data, speed_m_s)
@@ -526,3 +542,7 @@ if __name__ == '__main__':
         process_as_range_data(fft_data, ctrl)
 
     plt.show()  # call only once for all plots
+
+    if ctrl.print_time:
+        print('Processing complete.', end='')
+        print_time_elapsed(time_start)
