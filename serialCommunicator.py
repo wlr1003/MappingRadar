@@ -20,13 +20,13 @@ from matplotlib.colors import LinearSegmentedColormap
 ############################################
 # Set time and mode defaults
 TIME_DEFAULT = 30
-MODE_DEFAULT = 'range'
-DIGITAL_POT_DEFAULT = 0x3f  # default value to send to stm32
+MODE_DEFAULT = 'speed'
+DIGITAL_POT_DEFAULT = 0x7f  # default value to send to stm32
 
 #  turn off connection to stm32, loads file as data to process
-CONNECT_TO_STM = True
-output_file = 'output/delete.txt'  # file name to create and save returned data
-load_file = "output/rangecookiesheet10.txt"  # file to load to get data to process
+CONNECT_TO_STM = False
+output_file = 'output/speed7f2-2.txt'  # file name to create and save returned data
+load_file = "output/speed7f2-1.txt"  # file to load to get data to process
 ############################################
 #  pot = 3f
 #  yagi
@@ -49,7 +49,7 @@ load_file = "output/rangecookiesheet10.txt"  # file to load to get data to proce
 #  pot set to zero
 
 # radar parameters
-MAX_RANGE_METERS = 42.5  # max range will alter the max range that will be plotted
+MAX_RANGE_METERS = 120  # max range will alter the max range that will be plotted
 MAX_SPEED_KMH = 50  # 200kmh ~ 124mph
 SAMPLING_FREQUENCY = 40000  # radar sampling frequency
 SAMPLING_BITS = 2 ** 16  # 16 bit samples from ADC
@@ -112,6 +112,8 @@ def trim_data(input_data):
     num_samples = np.shape(input_data)[0]  # get total sample number
     num_remove = int(
         num_samples % (SAMPLING_FREQUENCY * VTUNE_PERIOD))  # get remainder of total sample number and samples per 40 ms
+    if num_remove == 0:
+        return input_data
     indexes_remove = np.array(
         [num_samples - i - 1 for i in range(num_remove)])  # create array of indexes to remove from data
     return np.delete(input_data, indexes_remove)  # return input data truncated to last full 100 ms block
@@ -542,12 +544,12 @@ if __name__ == '__main__':
             print('Ensemble mean removed.', end='')
             print_time_elapsed(time_start)
 
-    if ctrl.pulse_canceller == 2 and MODE_DEFAULT == 'range':
+    if ctrl.pulse_canceller == 2:
         data_split = data_split[2:] - data_split[1:-1]
         if ctrl.print_time:
             print('Two pulse cancellation complete.', end='')
             print_time_elapsed(time_start)
-    elif ctrl.pulse_canceller == 3 and MODE_DEFAULT == 'range':
+    elif ctrl.pulse_canceller == 3:
         data_split = data_split[3:] - 2*data_split[2:-1] + data_split[1:-2]
         if ctrl.print_time:
             print('Three pulse cancellation complete.', end='')
