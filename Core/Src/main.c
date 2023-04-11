@@ -22,7 +22,6 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-#include "lsm6dsl_reg.h"
 #include "usbd_cdc_if.h"
 
 
@@ -30,7 +29,8 @@
 
 /* Private typedef -----------------------------------------------------------*/
 /* USER CODE BEGIN PTD */
-typedef enum run_mode {none = 'x', range = 'r', speed = 's', idle = 'i', map = 'm'} run_mode;
+typedef enum run_mode {none = 'x', range = 'r', speed = 's', idle = 'i', test_low = 'l', test_high = 'h'} run_mode;
+typedef enum digital_potentiometer_mode {automatic, manual} digital_potentiometer_mode;
 
 typedef struct Control {
 	uint16_t run_time_sec;
@@ -38,9 +38,19 @@ typedef struct Control {
 	run_mode mode_running;
 	uint8_t transmit_data_flag;
 	uint32_t time_out;
+	uint8_t digital_pot_mode;
 	uint8_t digital_pot_instructed;
 	uint8_t digital_pot_current_setting;
 } control;
+
+typedef struct circ_buf {
+    uint16_t *buffer;
+    uint16_t read_index;
+    uint16_t write_index;
+    uint16_t max_size;
+    uint16_t block_len;
+    uint16_t size;
+} circ_buf;
 /* USER CODE END PTD */
 
 /* Private define ------------------------------------------------------------*/
@@ -52,8 +62,10 @@ typedef struct Control {
 
 /* Private macro -------------------------------------------------------------*/
 /* USER CODE BEGIN PM */
-#define TX_BUF_DIM 512 // buffer length for usb transmitting
 #define DMA_BUF_LEN 128 // buffer length for adc1 dma, mixer o/p
+#define TX_BUF_NUM_DMA 10 // number of full DMA buffers that can fit into TX_BUF
+#define TX_BUF_SIZE DMA_BUF_LEN * TX_BUF_NUM_DMA // buffer length for usb transmitting
+
 #define VTUNE_SAMPLE_LEN 2000 // number of samples in VTUNE waveform
 
 /* USER CODE END PM */
@@ -75,21 +87,19 @@ TIM_HandleTypeDef htim2;
 /* USER CODE BEGIN PV */
 static const uint8_t DIGITAL_POT_ADDR = 0x2f << 1; // Use 7-bit address '101111' for digital potentiometer
 static uint16_t adc1_dma_buf_mixer_out[DMA_BUF_LEN];
-static int16_t data_raw_acceleration[3];
-static int16_t data_raw_angular_rate[3];
-static int16_t data_raw_temperature;
-static float acceleration_mg[3];
-static float angular_rate_mdps[3];
-static float temperature_degC;
-static uint8_t whoamI, rst;
-//static uint8_t tx_buffer[TX_BUF_DIM];
+
+static circ_buf *tx_buf;
 extern uint8_t UserRxBufferFS[APP_RX_DATA_SIZE]; // usb receive buffer
 extern uint8_t input_received_flag; // flag for usb input received
 // Flag to indicate when the SPI transfer is complete
 volatile uint8_t spi_complete_flag = 0;
+volatile uint32_t analog_watchdog_adc = 0;
+uint8_t digital_pot_default = 0x3f;
 uint8_t VTune_first_cycle_complete;
 uint32_t IDLE = 3724; // 3Volt with 3.3V VDDA = 2.48GHz
 uint32_t CTune = 3103; /* 2.5Volt with 3.3V VDDA */
+uint32_t VTune_MIN = 2482;  // minimum value in VTune waveform, used for testing purposes
+uint32_t VTune_MAX = 3722;  // maximum value in VTune waveform, used for testing purposes
 uint32_t VTune[VTUNE_SAMPLE_LEN] = {
 		2482, 2483, 2484, 2486, 2487, 2488, 2489, 2491, 2492, 2493, 2494, 2495, 2497, 2498, 2499,
 		2500, 2502, 2503, 2504, 2505, 2507, 2508, 2509, 2510, 2512, 2513, 2514, 2515, 2517, 2518,
@@ -239,18 +249,20 @@ static void MX_SPI1_Init(void);
 static void MX_TIM1_Init(void);
 static void MX_I2C2_Init(void);
 /* USER CODE BEGIN PFP */
-// platform read/write used to read/write to lsm6dsl
-/** Please note that is MANDATORY: return 0 -> no Error.**/
-static int32_t platform_write(void *handle, uint8_t Reg, const uint8_t *Bufp, uint16_t len);
-static int32_t platform_read(void *handle, uint8_t Reg, uint8_t *Bufp, uint16_t len);
 
 // usb transmit
-extern uint8_t CDC_Transmit_FS(uint8_t* Buf, uint16_t Len);
+extern uint8_t CDC_Transmit_FS(uint8_t *Buf, uint16_t Len);
+uint8_t buf_push(circ_buf *buf, uint16_t *data);
+uint8_t transmit_buf(circ_buf *buf);
+void test_buffer();
+// input processing
 void process_input(const uint8_t *arr, control *pControl);
 uint8_t strcontains(const char* str1,const char* str2);
 void my_strcpy(char* cpy, const char* orig, uint8_t len);
-uint8_t isValid(const char checkChar,const char* validModes);
+uint8_t isValid(const char checkChar);
+// DAC control
 void set_DAC_for_VCO(control *ctrl_ptr, uint8_t cycle_DAC);
+// digital pot control
 HAL_StatusTypeDef set_digital_pot(control* ctrl_ptr);
 
 /* USER CODE END PFP */
@@ -269,8 +281,9 @@ int main(void)
   /* USER CODE BEGIN 1 */
 input_received_flag = 0;
 VTune_first_cycle_complete = 0;
+uint16_t count_cycle = 0;
 // uint8_t lsm6dslError[] ="LSM6DSL whoAmI error";
-uint32_t runtime_additional_time_ms = 00;
+uint32_t runtime_additional_time_ms = 100; // additional run time, giving extra samples which will be lost due to pulse cancellation
 uint8_t digital_pot_check = 255; // register used to read potentiometer register
 HAL_StatusTypeDef ret; // used for checking return values when function returns HAL status
 
@@ -280,8 +293,19 @@ user_input.mode_instructed = range; // r:range, s:speed, i: idle
 user_input.mode_running = none; // x:none
 user_input.run_time_sec=0; // length of time in seconds to operate
 user_input.time_out = 3600000; // will run in range mode upon start up for 1 hour before setting VCO to idle freq
-user_input.digital_pot_instructed = 0x3f;  // 0x7f is full scale, 0x3f is midscale, 0 is zero scale
-user_input.digital_pot_current_setting = 0x3f;  // digital pot will initialize itself to 0x3f on power up
+user_input.digital_pot_instructed = digital_pot_default;  // 0x7f is full scale, 0x3f is midscale, 0 is zero scale
+user_input.digital_pot_current_setting = digital_pot_default;  // digital pot will initialize itself to 0x3f on power up
+user_input.digital_pot_mode = automatic;
+
+// initialize tx_buf
+tx_buf = malloc(sizeof(circ_buf));
+tx_buf->block_len = DMA_BUF_LEN / 2;
+tx_buf->max_size = TX_BUF_SIZE;
+tx_buf->read_index = 0;
+tx_buf->write_index = 0;
+tx_buf->size = 0;
+tx_buf->buffer = malloc(TX_BUF_SIZE * sizeof(uint16_t));
+memset(tx_buf->buffer,0,tx_buf->max_size);
 
   /* USER CODE END 1 */
 
@@ -312,31 +336,18 @@ user_input.digital_pot_current_setting = 0x3f;  // digital pot will initialize i
   MX_TIM1_Init();
   MX_I2C2_Init();
   /* USER CODE BEGIN 2 */
+
+  /* calibrate ADC */
+  HAL_ADCEx_Calibration_Start(&hadc1, ADC_SINGLE_ENDED);
+
   set_DAC_for_VCO(&user_input, 0); // starts timer and sets dac output used for VCO
   HAL_TIM_Base_Start(&htim1); // start timer 1 for adc1 conversion for radar mixer o/p
   HAL_TIM_OC_Start(&htim1, TIM_CHANNEL_3); // sets output compare for timer1, sets PA10 to toggle on timer1 register reload (40kHz)
 
-//  set the digital pot to value in control struct
+  /* set the digital pot to value in control struct */
   ret = set_digital_pot(&user_input);
+//  test_buffer();
 
-  /* initialize accelerometer/gyroscope on lsm6dsl */
-  stmdev_ctx_t dev_ctx;
-  dev_ctx.write_reg = platform_write;
-  dev_ctx.read_reg = platform_read;
-  dev_ctx.handle = &hspi1;
-  /* Check device ID */
-    whoamI = 0;
-    lsm6dsl_device_id_get(&dev_ctx, &whoamI);
-
-    if ( whoamI != LSM6DSL_ID ) {
-//    	CDC_Transmit_FS(lsm6dslError,sizeof(lsm6dslError));
-    }
-//    /* Restore default configuration */
-//    lsm6dsl_reset_set(&dev_ctx, PROPERTY_ENABLE);
-//
-//    do {
-//      lsm6dsl_reset_get(&dev_ctx, &rst);
-//    } while (rst);
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -349,8 +360,12 @@ user_input.digital_pot_current_setting = 0x3f;  // digital pot will initialize i
 		    // read command
 	 	    process_input(&UserRxBufferFS,&user_input);
 	 	    // set digital pot on command from PC
-	 	    if (user_input.digital_pot_instructed != user_input.digital_pot_current_setting) {
+	 	    if (user_input.digital_pot_mode == manual && user_input.digital_pot_instructed != user_input.digital_pot_current_setting) {
 	 	    	ret = set_digital_pot(&user_input);
+	 	    } else {
+	 	    	user_input.digital_pot_instructed = 0x3f;
+	 	    	ret = set_digital_pot(&user_input);
+	 	    	analog_watchdog_adc = HAL_GetTick();
 	 	    }
 	 	    // when instructed
 	 	    // start the DAC for VCO according to command
@@ -361,12 +376,28 @@ user_input.digital_pot_current_setting = 0x3f;  // digital pot will initialize i
 	 	    	}
 	 	    	set_DAC_for_VCO(&user_input, 1);  // set DAC/ADC and calculate end time of run
 	 	    	if (user_input.mode_instructed == range) { // wait for 1 VTune cycle complete
-	 	    		while (VTune_first_cycle_complete != 1) {
+	 	    		while (VTune_first_cycle_complete != 1 && count_cycle < 2) {
+	 	    			if (VTune_first_cycle_complete == 1) {
+	 	    				VTune_first_cycle_complete = 0;
+	 	    				count_cycle += 1;
+	 	    			}
 	 	    			// stuck in loop until first dac_complete callback sets VTune_first _cycle_complete flag
 	 	    		}
+	 	    		count_cycle = 0;
 	 	    		HAL_Delay(2.5);
 	 	    	}
 	 	    	HAL_ADC_Start_DMA(&hadc1, (uint32_t*)adc1_dma_buf_mixer_out, DMA_BUF_LEN); // start the adc with dma
+	 	    	while (count_cycle < 4) {
+	 	    		if (tx_buf->size > 0) {
+	 	    			tx_buf->read_index += tx_buf->block_len;
+	 	    			if (tx_buf->read_index > tx_buf->max_size) {
+	 	    			    tx_buf->read_index = 0;
+	 	    			 }
+	 	    			 tx_buf->size -= tx_buf->block_len;
+	 	    			 count_cycle += 1;
+	 	    		}
+	 	    	}
+	 	    	count_cycle = 0;
 	 	    	user_input.time_out = HAL_GetTick() + (user_input.run_time_sec * 1000) + runtime_additional_time_ms;	// HAL_GetTick returns milliseconds
 	 	 	}
 	 	        input_received_flag=0; // clear input flag
@@ -379,15 +410,9 @@ user_input.digital_pot_current_setting = 0x3f;  // digital pot will initialize i
 			  HAL_ADC_Stop_DMA(&hadc1);	// stop ADC
 	 	      set_DAC_for_VCO(&user_input, 0);  // set DAC
 		  }
-		  // digital pot does not acknowledge after address sent
-//	  uint8_t digital_pot_buf = 0x7f; // 0x7f is full scale, 0x3f is midscale, 0 is zero scale
-//
-//	  if (ret != HAL_OK) {
-//		  HAL_Delay(10);
-//		  ret = HAL_I2C_Master_Transmit(&hi2c2, DIGITAL_POT_ADDR, &digital_pot_buf, 1, 1000);
-//		 // HAL_Delay(250);
-//	  }
-
+	  }
+	  if (tx_buf->size > 0) {
+		  transmit_buf(tx_buf);
 	  }
     /* USER CODE END WHILE */
 
@@ -433,8 +458,8 @@ void SystemClock_Config(void)
                               |RCC_CLOCKTYPE_PCLK1|RCC_CLOCKTYPE_PCLK2;
   RCC_ClkInitStruct.SYSCLKSource = RCC_SYSCLKSOURCE_PLLCLK;
   RCC_ClkInitStruct.AHBCLKDivider = RCC_SYSCLK_DIV1;
-  RCC_ClkInitStruct.APB1CLKDivider = RCC_HCLK_DIV1;
-  RCC_ClkInitStruct.APB2CLKDivider = RCC_HCLK_DIV1;
+  RCC_ClkInitStruct.APB1CLKDivider = RCC_HCLK_DIV2;
+  RCC_ClkInitStruct.APB2CLKDivider = RCC_HCLK_DIV4;
 
   if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_4) != HAL_OK)
   {
@@ -455,6 +480,7 @@ static void MX_ADC1_Init(void)
   /* USER CODE END ADC1_Init 0 */
 
   ADC_MultiModeTypeDef multimode = {0};
+  ADC_AnalogWDGConfTypeDef AnalogWDGConfig = {0};
   ADC_ChannelConfTypeDef sConfig = {0};
 
   /* USER CODE BEGIN ADC1_Init 1 */
@@ -492,6 +518,20 @@ static void MX_ADC1_Init(void)
   */
   multimode.Mode = ADC_MODE_INDEPENDENT;
   if (HAL_ADCEx_MultiModeConfigChannel(&hadc1, &multimode) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** Configure Analog WatchDog 1
+  */
+  AnalogWDGConfig.WatchdogNumber = ADC_ANALOGWATCHDOG_1;
+  AnalogWDGConfig.WatchdogMode = ADC_ANALOGWATCHDOG_SINGLE_REG;
+  AnalogWDGConfig.Channel = ADC_CHANNEL_1;
+  AnalogWDGConfig.ITMode = ENABLE;
+  AnalogWDGConfig.HighThreshold = 2431;
+  AnalogWDGConfig.LowThreshold = 743;
+  AnalogWDGConfig.FilteringConfig = ADC_AWD_FILTERING_2SAMPLES;
+  if (HAL_ADC_AnalogWDGConfig(&hadc1, &AnalogWDGConfig) != HAL_OK)
   {
     Error_Handler();
   }
@@ -577,7 +617,7 @@ static void MX_I2C2_Init(void)
 
   /* USER CODE END I2C2_Init 1 */
   hi2c2.Instance = I2C2;
-  hi2c2.Init.Timing = 0x30909DEC;
+  hi2c2.Init.Timing = 0x10909CEC;
   hi2c2.Init.OwnAddress1 = 0;
   hi2c2.Init.AddressingMode = I2C_ADDRESSINGMODE_7BIT;
   hi2c2.Init.DualAddressMode = I2C_DUALADDRESS_DISABLE;
@@ -850,59 +890,14 @@ static void MX_GPIO_Init(void)
 }
 
 /* USER CODE BEGIN 4 */
-/*
- * @brief  Write generic device register (platform dependent)
- *
- * @param  handle    customizable argument. In this examples is used in
- *                   order to select the correct sensor bus handler.
- * @param  reg       register to write
- * @param  bufp      pointer to data to write in register reg
- * @param  len       number of consecutive register to write
- *
- */
-static int32_t platform_write(void *handle, uint8_t reg, const uint8_t *bufp,
-                              uint16_t len)
-{
-  HAL_GPIO_WritePin(LSM6DSL_ncs_GPIO_Port, LSM6DSL_ncs_Pin, GPIO_PIN_RESET);
-  HAL_SPI_Transmit(&hspi1, &reg, 1, 2);
-  HAL_SPI_Transmit(&hspi1, (uint8_t*) bufp, len, 1000);
-  HAL_GPIO_WritePin(LSM6DSL_ncs_GPIO_Port, LSM6DSL_ncs_Pin, GPIO_PIN_SET);
-  return 0;
-}
 
-/*
- * @brief  Read generic device register (platform dependent)
- *
- * @param  handle    customizable argument. In this examples is used in
- *                   order to select the correct sensor bus handler.
- * @param  reg       register to read
- * @param  bufp      pointer to buffer that store the data read
- * @param  len       number of consecutive register to read
- *
- */
-static int32_t platform_read(void *handle, uint8_t reg, uint8_t *bufp,
-                             uint16_t len)
-{
-	uint8_t tx_data[2];
-	tx_data[0] = 0x80 | reg;
-	tx_data[1] = 0x00;
-	// get spi state
-	HAL_SPI_StateTypeDef tmp_state;
-	tmp_state = HAL_SPI_GetState(handle);
-
-	// Start the SPI transfer
-	HAL_GPIO_WritePin(LSM6DSL_ncs_GPIO_Port, LSM6DSL_ncs_Pin, GPIO_PIN_RESET);
-	HAL_SPI_TransmitReceive_DMA(handle, &tx_data, bufp, len + 1);
-//	  if(HAL_SPI_TransmitReceive_DMA(&SpiHandle, (uint8_t*)aTxBuffer, (uint8_t *)aRxBuffer, BUFFERSIZE) != HAL_OK)
-//	  {
-//	    /* Transfer error in transmission process */
-//	    Error_Handler();
-//	  }
-	// Wait for the transfer to complete
-    while(HAL_SPI_GetState(handle) != tmp_state);
-
-	HAL_GPIO_WritePin(LSM6DSL_ncs_GPIO_Port, LSM6DSL_ncs_Pin, GPIO_PIN_SET);
-  return 0;
+/**
+  * @brief  Analog watchdog callback in non blocking mode.
+  * @param  hadc: ADC handle
+  * @retval None
+  */
+  void HAL_ADC_LevelOutOfWindowCallback(ADC_HandleTypeDef* hadc) {
+  analog_watchdog_adc = HAL_GetTick();
 }
 
 
@@ -919,6 +914,7 @@ void HAL_SPI_RxCpltCallback(SPI_HandleTypeDef *hspi)
   spi_complete_flag = 1;
 }
 
+
 /**
   * @brief  Tx and Rx Transfer completed callback.
   * @param  hspi pointer to a SPI_HandleTypeDef structure that contains
@@ -932,6 +928,7 @@ void HAL_SPI_TxRxCpltCallback(SPI_HandleTypeDef *hspi)
   spi_complete_flag = 1;
 }
 
+
 /**
   * @brief  Conversion complete callback in non-blocking mode.
   * @param hadc ADC handle
@@ -940,10 +937,12 @@ void HAL_SPI_TxRxCpltCallback(SPI_HandleTypeDef *hspi)
 void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef *hadc)
 {
 	uint8_t len = DMA_BUF_LEN/2;
-	uint8_t halfIndex = len-1;
+//	uint8_t halfIndex = len-1;
 //	memcpy(tx_buffer[halfIndex],adc1_dma_buf_mixer_out[halfIndex],len);
-	CDC_Transmit_FS(&adc1_dma_buf_mixer_out[halfIndex], len);
+//	CDC_Transmit_FS(&adc1_dma_buf_mixer_out[halfIndex], len);
+	buf_push(tx_buf, &adc1_dma_buf_mixer_out[len]);
 }
+
 
 /**
   * @brief  Conversion DMA half-transfer callback in non-blocking mode.
@@ -952,14 +951,57 @@ void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef *hadc)
   */
 void HAL_ADC_ConvHalfCpltCallback(ADC_HandleTypeDef *hadc)
 {
-	uint8_t len = DMA_BUF_LEN/2;
+//	uint8_t len = DMA_BUF_LEN / 2;
 //	memcpy(tx_buffer[0],adc1_dma_buf_mixer_out[0],len);
-	CDC_Transmit_FS(&adc1_dma_buf_mixer_out[0], len);
+//	CDC_Transmit_FS(&adc1_dma_buf_mixer_out[0], len);
+	buf_push(tx_buf, &adc1_dma_buf_mixer_out[0]);
 }
 
 
 void HAL_DAC_ConvCpltCallbackCh1(DAC_HandleTypeDef *hdac) {
 	VTune_first_cycle_complete = 1;
+}
+
+
+/**
+  * @brief  push values in data into the circular buffer
+  * @param buf circular buffer pointer
+  * @param data uint8_t values to place into
+  * @retval None
+  */
+uint8_t buf_push(circ_buf *buf, uint16_t *data) {
+    if(buf->size == buf->max_size) {
+		HAL_GPIO_WritePin(LED2_GPIO_Port, LED2_Pin, SET);
+    	return 1;
+    }
+    memcpy(buf->buffer + buf->write_index, data, buf->block_len * sizeof(uint16_t));
+    buf->size += buf->block_len;
+    buf->write_index += buf->block_len;
+    if(buf->write_index > buf->max_size) {
+        buf->write_index = 0;
+    }
+    return 0;
+}
+
+
+
+uint8_t transmit_buf(circ_buf *buf) {
+    uint8_t count = 0;
+    HAL_StatusTypeDef ret = HAL_ERROR;
+    while(ret != HAL_OK && count < 5) {
+    	ret = CDC_Transmit_FS(&(buf->buffer[buf->read_index]), buf->block_len * sizeof(uint16_t));
+    	count++;
+    }
+    if (ret != HAL_OK) {
+    	HAL_GPIO_WritePin(LED3_GPIO_Port, LED3_Pin, SET);
+    	return ret;
+    }
+    buf->read_index += buf->block_len;
+    if (buf->read_index > buf->max_size) {
+    	buf->read_index = 0;
+    }
+    buf->size -= buf->block_len;
+	return 0;
 }
 
 
@@ -973,7 +1015,6 @@ void process_input(const uint8_t *arr, control *pControl) {
 	char mode[]="mode:";
     char time[] = "time:";
     char pot[] = "pot:";
-    char validMode[] = {'r', 's', 'm', 'i'}; // range speed map
     char word[64] = {0};
     uint8_t i = sizeof(mode);
     uint8_t j= sizeof(time);
@@ -981,7 +1022,7 @@ void process_input(const uint8_t *arr, control *pControl) {
     // check input to ensure "mode:" is received
     my_strcpy(word, arr, i);
     if (strcontains(word,mode)) {
-    	if (isValid(arr[i-1],validMode)) {
+    	if (isValid(arr[i-1])) {
     		pControl->mode_instructed=arr[i-1];     // set mode in command
     	}
     	else { // invalid mode command
@@ -1038,6 +1079,10 @@ void process_input(const uint8_t *arr, control *pControl) {
 			pControl->digital_pot_instructed = (pControl->digital_pot_instructed*10)+arr[i]-48;
 			i++;
 			}
+			if (pControl->digital_pot_instructed > 0x7f) {  // set gain control to automatic
+				pControl->digital_pot_instructed = 0x3f; // set an initial value to midscale
+				pControl->digital_pot_mode = automatic;
+			}
 	  }
 	  pControl->transmit_data_flag=1; // set flag for transmit data
 }
@@ -1075,17 +1120,19 @@ void my_strcpy(char* cpy, const char* orig, uint8_t len) {
 }
 
 /*
- * checks the checkChar is within the validModes char*
+ * checks the checkChar is one of the modes within run_mode
  * returns 1 for true, 0 for false
  */
-uint8_t isValid(const char checkChar,const char* validModes) {
-	uint8_t i;
-	for(i=0;sizeof(validModes);i++) {
-		if (checkChar==validModes[i]) {
-			return 1;
-		}
-	}
-	return 0;
+uint8_t isValid(const char checkChar) {
+    uint8_t valid = 0;
+    switch(checkChar)
+        case range:
+        case speed:
+        case idle:
+        case test_high:
+        case test_low:
+            valid = 1;
+    return valid;
 }
 
 
@@ -1107,21 +1154,29 @@ void set_DAC_for_VCO(control *ctrl_ptr, uint8_t cycle_DAC) {
 	}
 
 	// if currently running in other mode, turn it off,
-	if (ctrl_ptr->mode_running == range || ctrl_ptr->mode_running == map) {
+	if (ctrl_ptr->mode_running == range) {
 		HAL_DAC_Stop_DMA(&hdac1, DAC_CHANNEL_1);
 		HAL_TIM_Base_Stop(&htim2);
-	} else if (ctrl_ptr->mode_running == speed || ctrl_ptr->mode_running == idle) {
+	} else if (ctrl_ptr->mode_running == speed || ctrl_ptr->mode_running == idle || ctrl_ptr->mode_running == test_low || ctrl_ptr->mode_running == test_high) {
 		HAL_DAC_Stop(&hdac1, DAC_CHANNEL_1);
 	}
 
 	  /* Set DAC_CH_1 to CTune VTune or IDLE based on user input for mode */
-	if (ctrl_ptr->mode_instructed == range || ctrl_ptr->mode_instructed == map) {
+	if (ctrl_ptr->mode_instructed == range) {
 		// turn on dac using dma and timer 2
 		HAL_DAC_Start_DMA(&hdac1,DAC_CHANNEL_1,(uint32_t*)VTune,VTUNE_SAMPLE_LEN,DAC_ALIGN_12B_R);
 		HAL_TIM_Base_Start(&htim2);
 	} else if (ctrl_ptr->mode_instructed == speed) {
 		HAL_DAC_Start(&hdac1, DAC_CHANNEL_1);
 		HAL_DAC_SetValue(&hdac1, DAC_CHANNEL_1, DAC_ALIGN_12B_R, CTune);
+
+	} else if (ctrl_ptr->mode_instructed == test_low) {
+		HAL_DAC_Start(&hdac1, DAC_CHANNEL_1);
+		HAL_DAC_SetValue(&hdac1, DAC_CHANNEL_1, DAC_ALIGN_12B_R, VTune_MIN);
+
+	} else if (ctrl_ptr->mode_instructed == test_high) {
+		HAL_DAC_Start(&hdac1, DAC_CHANNEL_1);
+		HAL_DAC_SetValue(&hdac1, DAC_CHANNEL_1, DAC_ALIGN_12B_R, VTune_MAX);
 
 	} else {
 		HAL_DAC_Start(&hdac1, DAC_CHANNEL_1);
@@ -1133,7 +1188,7 @@ void set_DAC_for_VCO(control *ctrl_ptr, uint8_t cycle_DAC) {
 
 /*
  * set the digital pot using i2c
- * function will set LED1 on initial fail and LED2 on secondary fail
+ * function will set LED1 on fail
  * @param ctrl_ptr: pointer to control structure
  * @return: HAL status of i2c communication
  */
@@ -1144,15 +1199,49 @@ HAL_StatusTypeDef set_digital_pot(control* ctrl_ptr) {
 		uint8_t software_reset = 0xFF;
 		HAL_I2C_Master_Transmit(&hi2c2,software_reset , &software_reset, 1, 100);
 		ret = HAL_I2C_Master_Transmit(&hi2c2, DIGITAL_POT_ADDR, &ctrl_ptr->digital_pot_instructed, 1, 1000);
-		if (ret != HAL_OK) {
-			HAL_GPIO_WritePin(LED2_GPIO_Port, LED2_Pin, SET);
-		} else {
+		if (ret == HAL_OK) {
+			HAL_GPIO_WritePin(LED1_GPIO_Port, LED1_Pin, RESET);
 			ctrl_ptr->digital_pot_current_setting = ctrl_ptr->digital_pot_instructed;
 		}
 	} else {
 		ctrl_ptr->digital_pot_current_setting = ctrl_ptr->digital_pot_instructed;
 	}
 	return ret;
+}
+
+
+void test_buffer() {
+	uint32_t time = HAL_GetTick();
+	uint16_t data[DMA_BUF_LEN/2];
+	uint16_t count = 0;
+	for (int i = 0; i < DMA_BUF_LEN/2; i++) {
+		data[i] = i;
+	}
+	while(!input_received_flag) {
+		HAL_Delay(100);
+	}
+	while (time<30000) {
+		buf_push(tx_buf,data);
+		while (transmit_buf(tx_buf) != 0) {
+
+		}
+
+		count++;
+		for (int i = 0; i < DMA_BUF_LEN/2; i++) {
+			data[i] = i+(64*count);
+		}
+	}
+	buf_push(tx_buf,data);
+	buf_push(tx_buf,data);
+	buf_push(tx_buf,data);
+	buf_push(tx_buf,data);
+	buf_push(tx_buf,data);
+	buf_push(tx_buf,data);
+	buf_push(tx_buf,data);
+	buf_push(tx_buf,data);
+	buf_push(tx_buf,data);
+	buf_push(tx_buf,data);
+	buf_push(tx_buf,data); // should over fill and turn on led
 }
 
 
