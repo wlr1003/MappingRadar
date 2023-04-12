@@ -20,13 +20,13 @@ from matplotlib.colors import LinearSegmentedColormap
 ############################################
 # Set time and mode defaults
 TIME_DEFAULT = 30
-MODE_DEFAULT = 'speed'
+MODE_DEFAULT = 'range'
 DIGITAL_POT_DEFAULT = 0x7f  # default value to send to stm32
 
 #  turn off connection to stm32, loads file as data to process
 CONNECT_TO_STM = False
 output_file = 'output/delete.txt'  # file name to create and save returned data
-load_file = "output/speed7f2-1.txt"  # file to load to get data to process
+load_file = "output/range7f2-2.txt"  # file to load to get data to process
 ############################################
 #  pot = 3f
 #  yagi
@@ -70,6 +70,7 @@ class Signal_Processing_Control:
         self.ensemble_mean = True  # turn on/off the removal of the ensemble mean
         self.scale_for_range_loss = True  # turn on/off scaling of FFT returns to compensate signal power loss/distance
         self.pulse_canceller = 3  # set pulse cancellation to 0, 2, or 3
+        self.window = 'kaiser'  # window the sample blocks, set to None, 'hamming', 'hanning', 'blackman', 'kaiser'
         self.emd_analysis = False   # turn on/off the emd analysis
         self.sift_stop_criteria = ['standard deviation', 0.025]  # only standard deviation implemented so far
         self.emd_stop_criteria = ['n times', 5]  # ['n times', 10] or None
@@ -253,17 +254,15 @@ def process_as_range_data(data, control: Signal_Processing_Control):
         data_scaled = 20 * np.log10(offset_zeros(data_scaled))
         data_scaled -= data_scaled.min()
         plt.figure(control.fig_num())
-        plt.imshow(data_scaled, origin='lower', aspect=aspect_ratio, extent=[0, total_time, 0, MAX_RANGE_METERS], vmin=np.mean(data_scaled))
-        if ctrl.pulse_canceller != 0:
-            plt.title(f"Range of Target with Returns Scaled and {ctrl.pulse_canceller} Pulse Canceller")
-        else:
-            plt.title("Range of Target with Returns Scaled for Range Loss")
+        plt.imshow(data_scaled, origin='lower', aspect=aspect_ratio, extent=[0, total_time, 0, MAX_RANGE_METERS], vmin=np.mean(data_scaled)*1.05)
+        title = get_title(ctrl)
+        plt.suptitle("Range of Target")
+        if title is not None:
+            plt.title(title, fontsize='medium')
         plt.xlabel('Time (s)')
         plt.ylabel('Distance (m)')
     plt.figure(control.fig_num())
-    # range_data = 20 * np.log10(np.transpose(np.abs(data)))
     range_data = np.transpose(data)
-
     # range_min = np.min(range_data)
     # range_max = np.max(range_data)
     # print(f'range min val = {range_min}, range max val = {range_max}')
@@ -294,6 +293,19 @@ def offset_zeros(data):
         if data[n] < 0.001:
             data[n] = 0.001
     return data
+
+
+def get_title(ctl: Signal_Processing_Control):
+    suptitle = ''
+    if ctl.window is not None:
+        suptitle += ctl.window.capitalize() + ' Window Applied, '
+    if ctl.pulse_canceller > 0:
+        suptitle += str(ctl.pulse_canceller) + ' Pulse Cancellation, '
+    if ctl.scale_for_range_loss:
+        suptitle += 'and Returns Scaled for Range Loss, '
+    if suptitle == '':
+        return None
+    return suptitle.strip(' ').strip(',')
 
 
 # function performs empirical mode decomposition analysis and returns array of intrinsic mode functions
@@ -427,7 +439,7 @@ def print_time_elapsed(prev_time):
 
 if __name__ == '__main__':
     delay_time_sec = 0.5  # delay added to ensure all samples transferred
-    N_padded = 2 ** 16  # padding used for increased resolution of fft
+    N_padded = 2 ** 14  # padding used for increased resolution of fft
     run_mode = {'range': 'r', 'speed': 's', 'map': 'm', 'low': 'l', 'high': 'h'}  # dictionary of running modes
     ctrl = Signal_Processing_Control()
     time_start = time.time()
@@ -576,6 +588,20 @@ if __name__ == '__main__':
             print('Three pulse cancellation complete.', end='')
             print_time_elapsed(time_start)
 
+    if ctrl.window is not None:
+        window = 1
+        if ctrl.window == 'hamming':
+            window = np.hamming(data_split.shape[1])
+        elif ctrl.window == 'hanning':
+            window = np.hanning(data_split.shape[1])
+        elif ctrl.window == 'blackman':
+            window = np.blackman(data_split.shape[1])
+        elif ctrl.window == 'kaiser':
+            window = np.kaiser(data_split.shape[1], 14)
+        data_split = data_split * window
+        if ctrl.print_time:
+            print('Windowing complete.', end='')
+            print_time_elapsed(time_start)
     # take fft of every row with zero padding
     fft_data = fft(data_split, N_padded)
     if ctrl.print_time:
