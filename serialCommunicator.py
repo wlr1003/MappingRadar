@@ -25,7 +25,7 @@ DIGITAL_POT_DEFAULT = 0x7f  # default value to send to stm32
 
 #  turn off connection to stm32, loads file as data to process
 CONNECT_TO_STM = False
-output_file = 'output/speed7f2-2.txt'  # file name to create and save returned data
+output_file = 'output/delete.txt'  # file name to create and save returned data
 load_file = "output/speed7f2-1.txt"  # file to load to get data to process
 ############################################
 #  pot = 3f
@@ -62,7 +62,7 @@ VTUNE_PERIOD = 1/25  # period of vtune set by DAC output in s
 class Signal_Processing_Control:
     def __init__(self):
         self.print_time = True  # turn on/off text output detailing current status of processing
-        self.plot_preprocessed = True  # turn on/off plot of signal received over time
+        self.plot_preprocessed = False  # turn on/off plot of signal received over time
         self.plot_during_processing = False  # turn on/off plots of 3 sample blocks before and after ensemble mean
         self.plot_ranging_fft_at_5_sec = False  # turn on/off plot of individual FFT after range scaling
         self.notch_filter = False  # implements a notch filter removing 25Hz signal
@@ -191,11 +191,32 @@ def parse_input_args():
 
 
 # takes split fft data and keeps data below the frequency index of the max speed
-def process_as_speed_data(data, speed):
+def process_as_speed_data(data, speed, ctrl: Signal_Processing_Control):
     max_delt_freq = 2 * speed / constants.speed_of_light * CTUNE_FREQUENCY  # del_f = (Ve/c)*fc
     # keep fft data proportional to MAX_SPEED
     num_keep = get_max_freq_index(max_delt_freq)
-    data = data[:, :num_keep]
+    data = np.abs(data[:, :num_keep])
+    sample_num = round(data.shape[0]/2)
+    x_axis = np.arange(start=0, stop=max_delt_freq, step=max_delt_freq/num_keep)
+    if ctrl.plot_during_processing:
+        plt.figure(ctrl.fig_num())
+        plt.plot(x_axis, data[0])
+        plt.title('fft of sample 1')
+        plt.figure(ctrl.fig_num())
+        plt.plot(x_axis, data[sample_num])
+        plt.title(f'fft of sample {sample_num}')
+    if ctrl.scale_for_range_loss:
+        min_row = np.min(data, 1)
+        max_row = np.max(data, 1)
+        for i in range(data.shape[0]):
+            data[i] = (data[i] - min_row[i]) / (max_row[i] - min_row[i])
+        if ctrl.plot_during_processing:
+            plt.figure(ctrl.fig_num())
+            plt.plot(data[0])
+            plt.title('fft of sample 1 after normalization')
+            plt.figure(ctrl.fig_num())
+            plt.plot(x_axis, data[sample_num])
+            plt.title(f'fft of sample {sample_num} after normalization')
     return data
 
 
@@ -379,9 +400,9 @@ def plot_imfs(imfs: np.array,instantaneous_freq: np.array,  control: Signal_Proc
 # function plots the FFT results as speed returns
 def plot_speed_result(data, speed, ctrl):
     plt.figure(ctrl.fig_num())
-    range_data = np.transpose(np.abs(data))
+    range_data = np.transpose(data)
     aspect_ratio = total_time / speed * (5/7)
-    plt.imshow(range_data, origin='lower', aspect=aspect_ratio, extent=[0, total_time, 0, speed])
+    plt.imshow(range_data, origin='lower', aspect=aspect_ratio, extent=[0, total_time, 0, speed], vmin=np.mean(data))
     plt.title("Speed of Target")
     plt.xlabel('Time (s)')
     plt.ylabel('Speed (m/s)')
@@ -406,7 +427,7 @@ def print_time_elapsed(prev_time):
 
 if __name__ == '__main__':
     delay_time_sec = 0.5  # delay added to ensure all samples transferred
-    N_padded = 2 ** 14  # padding used for increased resolution of fft
+    N_padded = 2 ** 16  # padding used for increased resolution of fft
     run_mode = {'range': 'r', 'speed': 's', 'map': 'm', 'low': 'l', 'high': 'h'}  # dictionary of running modes
     ctrl = Signal_Processing_Control()
     time_start = time.time()
@@ -576,13 +597,14 @@ if __name__ == '__main__':
 
     if mode_selected == 'speed':
         speed_m_s = MAX_SPEED_KMH * 1000 / (60 * 60)  # convert km/h to m/s
-        fft_data = process_as_speed_data(fft_data, speed_m_s)
+        fft_data = process_as_speed_data(fft_data, speed_m_s, ctrl)
         plot_speed_result(fft_data, speed_m_s, ctrl)
     elif mode_selected == 'range':
         process_as_range_data(fft_data, ctrl)
 
-    plt.show()  # call only once for all plots
-
     if ctrl.print_time:
         print('Processing complete.', end='')
         print_time_elapsed(time_start)
+
+    plt.show()  # call only once for all plots
+
