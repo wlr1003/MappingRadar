@@ -1,8 +1,18 @@
-# MappingRadar Control Script
+# Radar Control Script
 # Made by William Ralston & Evan Stenger
 # ECE 791/792
-# signal generator at 2.455653 for test run in lab
 
+# Functionality of this script is altered by
+# 1: changing the global variables below the import statements
+#       CONNECT_TO_STM: establish a serial connection and acquire samples or load samples from file
+#       output_file: the filename to be created for new samples if connecting to stm (will overwrite if already exists)
+#       load_file: the file to load samples from if not connecting to stm
+#       TIME_DEFAULT: the length of time to instruct the stm32 to collect/send samples
+#       DIGITAL_POT_DEFAULT: value to instruct the stm32 to set the digital pot to 0 to 127 or 0x7f
+#       MODE_DEFAULT: mode of operation for both stm32 (selects C-Tune or V-Tune) and processing scheme(range or speed)
+#       MAX_RANGE/SPEED: sets the maximum values to plot to for range and speed processing
+# 2: changing the __init__ of Signal_Processing_Control class
+#       variables control additional plotting, the processing scheme, and an optional emd analysis
 
 import os
 import sys
@@ -13,26 +23,29 @@ from scipy import constants
 from scipy import interpolate
 from scipy.signal import hilbert, decimate
 import numpy as np
-from numpy.fft import rfft
+from scipy.fft import rfft
 import matplotlib.pyplot as plt
-from matplotlib.colors import LinearSegmentedColormap
 
 ############################################
-# Set time and mode defaults
-TIME_DEFAULT = 10
-MODE_DEFAULT = 'range'
-DIGITAL_POT_DEFAULT = 0x0  # default value to send to stm32
-
 #  turn off connection to stm32, loads file as data to process
 CONNECT_TO_STM = False
 output_file = 'output/delete.txt'  # file name to create and save returned data
-load_file = "output/range7f2-2.txt"  # file to load to get data to process
+load_file = "output/range7f.txt"  # file to load to get data to process
+# Set time and mode defaults
+TIME_DEFAULT = 10
+DIGITAL_POT_DEFAULT = 0x0  # default value to send to stm32
+MODE_DEFAULT = 'range'  # set to 'range' or 'speed'
+MAX_RANGE_METERS = 100  # max range will alter the max range that will be plotted
+MAX_SPEED_KMH = 50  # 200kmh ~ 124mph
+
+# below is some information on testing files in output folder
 # speed7f2-1 best speed
 # range7f2-2 longest range
 # range7f 90 meters stopping every 10 meters
 ############################################
-#  pot = 3f
-#  yagi
+# recording information
+# pot = 3f
+# yagi
 # cookie 1 stationary
 # cookie 2 walking away, grab cookie, come back
 # cookie 3 holding cookie sheet, walk away and back
@@ -40,54 +53,55 @@ load_file = "output/range7f2-2.txt"  # file to load to get data to process
 # cookie 4 walk away, run to
 # cans
 # cookie 5 walk away walk back
-#  max pot
+# max pot
 # cookie 6 max pot, walk away walk back
 # yagi
-#  cookie 7 walk away walk back
+# cookie 7 walk away walk back
 # cookie 8 walk away whole time
 # speed 9 ran away, run back
-#  range 10 walk away whole time
+# range 10 walk away whole time
 # 11 amp moved to receive
-#  12 car driving toward
-#  pot set to zero
+# 12 car driving toward
+# pot set to zero
 
 # radar parameters
-MAX_RANGE_METERS = 120  # max range will alter the max range that will be plotted
-MAX_SPEED_KMH = 50  # 200kmh ~ 124mph
 SAMPLING_FREQUENCY = 40000  # radar sampling frequency
 SAMPLING_BITS = 2 ** 16  # 16 bit samples from ADC
 CTUNE_FREQUENCY = 2455650000  # 2.45 GHz measured on spectrum analyzer
 VTUNE_BANDWIDTH = 80000000  # Bandwidth of vtune signal from VCO
-VTUNE_PERIOD = 1/25  # period of vtune set by DAC output in s
+VTUNE_PERIOD = 1 / 25  # period of vtune set by DAC output in s
 
 
-# control class used to alter signal processing scheme
+# control class used throughout signal processing scheme
 class Signal_Processing_Control:
     def __init__(self):
         self.print_time = True  # turn on/off text output detailing current status of processing
-        self.plot_preprocessed = False  # turn on/off plot of signal received over time
+        # variables for additional plots
+        self.plot_preprocessed = False  # turn on/off plot of signal received over time, fft of entire data set
         self.plot_during_processing = False  # turn on/off plots of 3 sample blocks before and after ensemble mean
         self.plot_extra_ensemble_samples = False  # turn on/off plots of tenth and last sample blocks around ensemble
-        self.notch_filter = False  # implements a notch filter removing 25Hz signal
-        self.filter_and_down_sample = True  # decimate by a factor of 5, not necessary, but speeds up processing
+        self.plot_imfs = True  # turn on/off plots of recovered imf's, only used if emd_analysis is True
+        # variables alter the processing scheme
+        self.filter_and_down_sample = False  # decimate by a factor of 5, not necessary (slows processing down)
         self.ensemble_mean = True  # turn on/off the removal of the ensemble mean
-        self.scale_for_range_loss = True  # turn on/off scaling of FFT returns to compensate signal power loss/distance
-        self.energy_spectral_density = True
         self.pulse_canceller = 3  # set pulse cancellation to 0, 2, or 3
         self.window = 'kaiser'  # window the sample blocks, set to None, 'hamming', 'hanning', 'blackman', 'kaiser'
-        self.emd_analysis = False   # turn on/off the emd analysis
+        self.scale_for_range_loss = True  # turn on/off scaling of FFT returns to compensate signal power loss/distance
+        self.energy_spectral_density = True  # turn on/off the esd calculation
+        self.process_in_halves = False  # separate ranging calculation of each half of the vtune wave
+        self.notch_filter = False  # implements a notch filter removing 25Hz signal
+        # emd analysis variables
+        self.emd_analysis = False  # turn on/off the emd analysis
         self.sift_stop_criteria = ['standard deviation', 0.025]  # only standard deviation implemented so far
         self.emd_stop_criteria = ['n times', 5]  # ['n times', 10] or None
-        self.plot_imfs = True   # turn on/off plots of recovered imf's, only used if emd_analysis is True
+        # variables below are used within processing scheme do not alter
         self.data_set = np.array(0)  # initialize data set to empty numpy array
-        self.process_in_halves = False
-        self.first_half_blocks = None
-        self.second_half_blocks = None
-        self.single_target_detector = False  # dont use
-        self.N_trimmed = 0      # number of samples after truncating data to be evenly divisible
-        self._figure_num = 0    # protected variable, used to keep track of figures
+        self.first_half_blocks = None  # holds array for half processing
+        self.second_half_blocks = None  # holds array for half processing
+        self.N_trimmed = 0  # number of samples after truncating data to be evenly divisible
+        self._figure_num = 0  # protected variable, used to keep track of figures
 
-# returns the current figure number used during plotting
+    # returns the current figure number used during plotting
     def fig_num(self):
         self._figure_num += 1
         return self._figure_num
@@ -121,8 +135,6 @@ def trim_data(input_data):
     num_samples = np.shape(input_data)[0]  # get total sample number
     num_remove = int(
         num_samples % (SAMPLING_FREQUENCY * VTUNE_PERIOD))  # get remainder of total sample number and samples per 40 ms
-    if num_remove == 0:
-        return input_data
     return input_data[:num_samples - num_remove]  # return input data truncated to last full 100 ms block
 
 
@@ -203,8 +215,8 @@ def process_as_speed_data(data, speed):
     # keep fft data proportional to MAX_SPEED
     num_keep = get_max_freq_index(max_delt_freq)
     data = np.abs(data[:, :num_keep])
-    sample_num = round(data.shape[0]/2)
-    x_axis = np.arange(start=0, stop=max_delt_freq, step=max_delt_freq/num_keep)
+    sample_num = round(data.shape[0] / 2)
+    x_axis = np.arange(start=0, stop=max_delt_freq, step=max_delt_freq / num_keep)
     if ctrl.plot_during_processing:
         plt.figure(ctrl.fig_num())
         plt.plot(x_axis, data[0])
@@ -249,16 +261,15 @@ def process_as_range_data(data):
         if ctrl.energy_spectral_density:
             ctrl.first_half_blocks = energy_spectral_density(ctrl.first_half_blocks)
             ctrl.second_half_blocks = energy_spectral_density(ctrl.second_half_blocks)
-
     if ctrl.scale_for_range_loss:
-        data = scale_data_for_range_losses(data)
-
+        data = scale_data_for_range_losses(data, max_delt_freq)
     return np.transpose(data)
 
 
-def scale_data_for_range_losses(data):
+def scale_data_for_range_losses(data, max_delt_freq):
     range_scale_coefficient = 1.5
-    range_scale = np.arange(start=0, stop=MAX_RANGE_METERS, step=MAX_RANGE_METERS/data.shape[1]) ** range_scale_coefficient
+    range_scale = np.arange(start=0, stop=MAX_RANGE_METERS,
+                            step=MAX_RANGE_METERS / data.shape[1]) ** range_scale_coefficient
     if ctrl.process_in_halves:
         ctrl.first_half_blocks = ctrl.first_half_blocks[:] * range_scale
         ctrl.second_half_blocks = ctrl.second_half_blocks[:] * range_scale
@@ -266,29 +277,6 @@ def scale_data_for_range_losses(data):
         ctrl.second_half_blocks = 20 * np.log10(offset_zeros(ctrl.second_half_blocks))
         ctrl.first_half_blocks -= ctrl.first_half_blocks.min()
         ctrl.second_half_blocks -= ctrl.second_half_blocks.min()
-        # if ctrl.single_target_detector:
-        #     range_index_first = np.argmax(ctrl.first_half_blocks, axis=0)
-        #     range_index_second = np.argmax(ctrl.second_half_blocks, axis=0)
-        #     range_index = np.reshape((np.rint((range_index_first + range_index_second) / 2)).astype(int), (data.shape[0], 1))
-        #     data_scaled = np.zeros(data.shape)
-        #     plt.figure(20)
-        #     plt.plot(range_index_first)
-        #     plt.figure(21)
-        #     plt.plot(range_index_second)
-        #     plt.figure(22)
-        #     plt.plot(range_index)
-        #     range_index_first = (range_index_first[1:] + range_index_first[0:-1]) / 2
-        #     range_index_second = (range_index_second[1:] + range_index_second[0:-1]) / 2
-        #     range_index = np.reshape((np.rint((range_index_first + range_index_second) / 2)).astype(int), (data.shape[0]-1, 1))
-        #     plt.figure(23)
-        #     plt.plot(range_index_first)
-        #     plt.figure(24)
-        #     plt.plot(range_index_second)
-        #     plt.figure(25)
-        #     plt.plot(range_index)
-        #     plt.show()
-        #     data_scaled[range_index] = ctrl.first_half_blocks[range_index_first]
-        # else:
         data_scaled = (ctrl.first_half_blocks + ctrl.second_half_blocks) / 2
     else:
         data -= np.min(data)
@@ -297,9 +285,9 @@ def scale_data_for_range_losses(data):
 
         if ctrl.plot_during_processing:
             plot_data = data_scaled
-            x_axis1 = np.arange(start=0, stop=max_delt_freq, step=max_delt_freq/len(plot_data[0]))
-            x_axis2_locations = np.arange(start=0, stop=max_delt_freq, step=max_delt_freq/10)
-            x_axis2 = np.arange(start=0, stop=MAX_RANGE_METERS, step=MAX_RANGE_METERS/10)
+            x_axis1 = np.arange(start=0, stop=max_delt_freq, step=max_delt_freq / len(plot_data[0]))
+            x_axis2_locations = np.arange(start=0, stop=max_delt_freq, step=max_delt_freq / 10)
+            x_axis2 = np.arange(start=0, stop=MAX_RANGE_METERS, step=MAX_RANGE_METERS / 10)
             fig = plt.figure(ctrl.fig_num())
             ax1 = fig.add_subplot(111)
             ax2 = ax1.twiny()
@@ -323,6 +311,8 @@ def get_max_freq_index(max_delt_freq):
     return num_keep
 
 
+# calculates esd of complex fft data  Y=data^2
+# multiplies data by complex conjugate and takes the real result
 def energy_spectral_density(data):
     esd_time = time.time()
     data *= np.conj(data)
@@ -342,7 +332,9 @@ def offset_zeros(data):
     return data
 
 
+# get a more descriptive title for final range plot
 def get_title():
+    return None  # comment out to enable
     title_str = ''
     if ctrl.window is not None:
         title_str += ctrl.window.capitalize() + ' Window Applied, '
@@ -355,6 +347,7 @@ def get_title():
     return title_str.strip(' ').strip(',')
 
 
+# calculate the time domain window function and apply to the data set
 def window_data_set(data):
     window = 1
     window_half = 1
@@ -397,10 +390,10 @@ def emd(data_1d: np.ndarray):
     emd_stop_criteria_met = False
     intrinsic_mode_functions = []
     residual = np.copy(data_1d)  # residual is h_1
-    current_residual = None     # variables for tracking residual during sifting h_1k
-    last_residual = None        # h_1(k-1)
+    current_residual = None  # variables for tracking residual during sifting h_1k
+    last_residual = None  # h_1(k-1)
     x_axis = np.arange(0, len(residual) / SAMPLING_FREQUENCY, 1 / SAMPLING_FREQUENCY)  # generate an x-axis of time
-    while not emd_stop_criteria_met:    # produce imf's until monotonic function remains or n imf's produced
+    while not emd_stop_criteria_met:  # produce imf's until monotonic function remains or n imf's produced
         current_residual = np.copy(residual)  # reset current residual to the total residual
         sift_count = 0
         sift_stop_criteria_met = False
@@ -414,19 +407,21 @@ def emd(data_1d: np.ndarray):
                 emd_stop_criteria_met = True
                 break
             # interpolate the maxima/minima using a cubic spline
-            upper_spline = interpolate.InterpolatedUnivariateSpline(maxima, current_residual[maxima], k=3)  # returns a spline class
+            upper_spline = interpolate.InterpolatedUnivariateSpline(maxima, current_residual[maxima],
+                                                                    k=3)  # returns a spline class
             lower_spline = interpolate.InterpolatedUnivariateSpline(minima, current_residual[minima], k=3)
             # passing the x-axis as an argument returns the spline defined within the range of the x-axis
             upper_spline = upper_spline(range(len(x_axis)))
             lower_spline = lower_spline(range(len(x_axis)))
             spline_mean = np.mean([upper_spline, lower_spline], axis=0)  # find the mean of the spline envelope
             current_residual -= np.reshape(spline_mean, current_residual.shape)
-            extrema_difference = abs(len(maxima)-len(minima))
+            extrema_difference = abs(len(maxima) - len(minima))
             if ctrl.sift_stop_criteria[0] == 'standard deviation':
                 if sift_count > 1 and extrema_difference <= 1:
                     st = np.max((maxima[0], minima[0]))  # check after both start
                     en = np.min((maxima[-1], minima[-1]))  # check before both end
-                    stop_criteria = np.sum((last_residual[st:en] - current_residual[st:en]) ** 2) / np.sum(last_residual[st:en] ** 2)
+                    stop_criteria = np.sum((last_residual[st:en] - current_residual[st:en]) ** 2) / np.sum(
+                        last_residual[st:en] ** 2)
                     if stop_criteria < ctrl.sift_stop_criteria[1]:
                         sift_stop_criteria_met = True
         # sifting is complete, record the current residual as the imf component
@@ -453,7 +448,8 @@ def is_monotonic(residual: np.array):
 
 # function plots array of intrinsic mode functions
 def plot_imfs(imf_data: np.array, instantaneous_freq: np.array):
-    x_axis_time = np.arange(0, len(imf_data[0]) / SAMPLING_FREQUENCY, 1 / SAMPLING_FREQUENCY)  # generate an x-axis of time
+    x_axis_time = np.arange(0, len(imf_data[0]) / SAMPLING_FREQUENCY,
+                            1 / SAMPLING_FREQUENCY)  # generate an x-axis of time
     imf_num = 1  # num is index of imf used for plot title
     # avg = 3  # number of points to include in moving average
     for imf in imf_data:
@@ -468,8 +464,8 @@ def plot_imfs(imf_data: np.array, instantaneous_freq: np.array):
         plt.subplot(212)
         ramp_rate = VTUNE_BANDWIDTH / (VTUNE_PERIOD / 2)  # rate of change of vtune signal
         delt_freq = 2 * ramp_rate / constants.speed_of_light
-        instantaneous_freq[num-2] = np.abs(instantaneous_freq[num-2]) / delt_freq
-        plt.plot(x_axis_time[0:len(instantaneous_freq[num-2])], instantaneous_freq[num-2])
+        instantaneous_freq[num - 2] = np.abs(instantaneous_freq[num - 2]) / delt_freq
+        plt.plot(x_axis_time[0:len(instantaneous_freq[num - 2])], instantaneous_freq[num - 2])
         plt.title("Range of Target from Instantaneous Frequency of IMF")
         plt.xlabel('Time (s)')
         plt.ylabel('Target Range (m)')
@@ -478,26 +474,27 @@ def plot_imfs(imf_data: np.array, instantaneous_freq: np.array):
         # plt.plot(x_axis_time[0:len(instantaneous_freq[num-2])], np.convolve(instantaneous_freq[num-2], np.ones(avg)/avg, 'same'), label=label)
         # plt.plot(x_axis_time[0:len(instantaneous_freq[num-2])], np.convolve(instantaneous_freq[num-2], np.ones(5)/5, 'same'), label='5')
         avg = int(SAMPLING_FREQUENCY / 50)
-        plt.plot(x_axis_time[0:len(instantaneous_freq[num-2])], np.convolve(instantaneous_freq[num-2], np.ones(avg)/avg, 'same'), label=str(avg))
+        plt.plot(x_axis_time[0:len(instantaneous_freq[num - 2])],
+                 np.convolve(instantaneous_freq[num - 2], np.ones(avg) / avg, 'same'), label=str(avg))
 
 
 # function plots the FFT results as speed returns
 def plot_speed_result(data, speed):
     plt.figure(ctrl.fig_num())
     data = np.transpose(data)
-    aspect_ratio = total_time / speed * (5/7)
+    aspect_ratio = total_time / speed * (5 / 7)
     plt.imshow(data, origin='lower', aspect=aspect_ratio, extent=[0, total_time, 0, speed], vmin=np.mean(data))
     plt.title("Speed of Target")
     plt.xlabel('Time (s)')
     plt.ylabel('Speed (m/s)')
 
 
+# function plots the passed data as a range image
 def plot_range_result(data):
-    # colors = [(0, 0, 0), (0.8, 0, 0), (1, 1, 0)]  # first color is black, second is red, third is yellow
-    # cmap = LinearSegmentedColormap.from_list("Custom", colors, N=256)
-    aspect_ratio = total_time / MAX_RANGE_METERS * (5/7)
+    aspect_ratio = total_time / MAX_RANGE_METERS * (5 / 7)
+    vmin = data.mean(dtype=np.float32) * 1.05  # sets minimum value of color scale (all values at/below are min color)
     plt.figure(ctrl.fig_num())
-    plt.imshow(data, origin='lower', aspect=aspect_ratio, extent=[0, total_time, 0, MAX_RANGE_METERS], vmin=np.mean(data) * 1.05)
+    plt.imshow(data, origin='lower', aspect=aspect_ratio, extent=[0, total_time, 0, MAX_RANGE_METERS], vmin=vmin)
     title = get_title()
     if title is not None:
         plt.title(title, fontsize='medium')
@@ -524,7 +521,7 @@ def plot_signal_over_time(control: Signal_Processing_Control):
 def plot_fft_entire_signal(control: Signal_Processing_Control):
     freq_axis = np.array([i * SAMPLING_FREQUENCY / (control.N_trimmed - 1) for i in range(control.N_trimmed)])
     plt.figure(control.fig_num())
-    data = np.abs(fft(control.data_set))
+    data = np.abs(rfft(control.data_set, workers=-1))
     plt.yscale('log')
     plt.plot(freq_axis, data)
     plt.title("FFT of entire data set")
@@ -532,6 +529,9 @@ def plot_fft_entire_signal(control: Signal_Processing_Control):
     plt.xlabel("Frequency (Hz)")
 
 
+# function plots a single sample block with the passed title combination
+# suptitle is higher than title and is used as main figure title with regular title as secondary information
+# if one title is desired, pass a title only
 def plot_sample_block(sample_block, title, suptitle=None):
     plt.figure(ctrl.fig_num())
     plt.plot(sample_block)
@@ -547,7 +547,7 @@ def plot_sample_block(sample_block, title, suptitle=None):
 
 # function prints time elapsed from the passed prev_time
 def print_time_elapsed(prev_time):
-    print(' Time elapsed: ' + str(time.time()-prev_time))
+    print(' Time elapsed: ' + str(time.time() - prev_time))
 
 
 if __name__ == '__main__':
@@ -668,14 +668,14 @@ if __name__ == '__main__':
             print_time_elapsed(time_start)
 
     if ctrl.pulse_canceller == 2:
-        data_split = data_split[2:] - data_split[1:-1]
+        data_split = data_split[1:] - data_split[:-1]
         if ctrl.plot_during_processing:
             plot_sample_block(data_split[0], 'Two Pulse Cancellation', 'First Sample Block')
         if ctrl.print_time:
             print('Two pulse cancellation complete.', end='')
             print_time_elapsed(time_start)
     elif ctrl.pulse_canceller == 3:
-        data_split = data_split[2:] - 2*data_split[1:-1] + data_split[:-2]
+        data_split = data_split[2:] - 2 * data_split[1:-1] + data_split[:-2]
 
         data_split -= data_split.mean(axis=0)
         if ctrl.plot_during_processing:
@@ -686,20 +686,20 @@ if __name__ == '__main__':
 
     if ctrl.process_in_halves:
         # separate out first and second halves of sample blocks
-        first_half_indices = np.arange(0, round(data_split.shape[1]/2))
-        second_half_indices = np.arange(round(data_split.shape[1]/2), data_split.shape[1])
+        first_half_indices = np.arange(0, round(data_split.shape[1] / 2))
+        second_half_indices = np.arange(round(data_split.shape[1] / 2), data_split.shape[1])
         ctrl.first_half_blocks = np.delete(data_split, second_half_indices, 1)  # remove second half of each pulse
         ctrl.second_half_blocks = np.delete(data_split, first_half_indices, 1)  # remove first half of each pulse
 
-    if ctrl.window is not None:
+    if ctrl.window:
         data_split = window_data_set(data_split)
 
     # take fft of every row with zero padding
     fft_pre_time = time.time()
-    fft_data = rfft(data_split, N_padded)
+    fft_data = rfft(data_split, N_padded, workers=-1)
     if ctrl.process_in_halves:
-        ctrl.first_half_blocks = np.abs(fft(ctrl.first_half_blocks, N_padded))
-        ctrl.second_half_blocks = np.abs(fft(ctrl.second_half_blocks, N_padded))
+        ctrl.first_half_blocks = np.abs(rfft(ctrl.first_half_blocks, N_padded))
+        ctrl.second_half_blocks = np.abs(rfft(ctrl.second_half_blocks, N_padded))
     if ctrl.print_time:
         print('FFT of signal complete. Time to calculate fft.', end='')
         print_time_elapsed(fft_pre_time)
@@ -720,7 +720,7 @@ if __name__ == '__main__':
             print_time_elapsed(time_start)
         analytic_signal = hilbert(imfs)
         instantaneous_phase = np.unwrap(np.angle(analytic_signal))
-        instantaneous_frequency = (np.diff(instantaneous_phase) / (2.0*np.pi) * SAMPLING_FREQUENCY)
+        instantaneous_frequency = (np.diff(instantaneous_phase) / (2.0 * np.pi) * SAMPLING_FREQUENCY)
         if ctrl.print_time:
             print('Instantaneous frequency calculated.', end='')
             print_time_elapsed(time_start)
@@ -741,7 +741,7 @@ if __name__ == '__main__':
             print_time_elapsed(time_start)
     elif mode_selected == 'range':
         range_data = process_as_range_data(fft_data)
-        range_resolution = constants.speed_of_light/(4*VTUNE_BANDWIDTH)
+        range_resolution = constants.speed_of_light / (4 * VTUNE_BANDWIDTH)
         print('Range resolution: ' + str(range_resolution) + ' meters')
         print('Maximum Range: ' + str(range_resolution * VTUNE_PERIOD * SAMPLING_FREQUENCY / 2) + ' meters')
         if ctrl.print_time:
